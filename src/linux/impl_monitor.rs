@@ -368,4 +368,16 @@ impl ImplMonitor {
     pub fn video_recorder(&self) -> XCapResult<(ImplVideoRecorder, Receiver<Frame>)> {
         ImplVideoRecorder::new(self.clone())
     }
+
+    /// 获取显示器的 UUID
+    /// 通过 XRandR 从 EDID 中生成唯一标识符
+    pub fn uuid(&self) -> XCapResult<String> {
+        super::display_info::get_display_uuid(self.output)
+    }
+
+    /// 获取显示器的序列号
+    /// 通过 XRandR 从 EDID 中提取序列号
+    pub fn serial_number(&self) -> XCapResult<String> {
+        super::display_info::get_display_serial_number(self.output)
+    }
 }

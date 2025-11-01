@@ -1,4 +1,5 @@
 mod capture;
+mod display_info;
 mod utils;
 
 pub mod impl_monitor;

@@ -7,10 +7,21 @@ fn main() {
     println!("Monitor::all() 运行耗时: {:?}", start.elapsed());
 
     for monitor in monitors {
+        // 获取 UUID 和序列号（如果可用）
+        let uuid_str = monitor.uuid()
+            .map(|u| format!("UUID: {}", u))
+            .unwrap_or_else(|_| "UUID: N/A".to_string());
+
+        let serial_str = monitor.serial_number()
+            .map(|s| format!("Serial: {}", s))
+            .unwrap_or_else(|_| "Serial: N/A".to_string());
+
         println!(
-            "Monitor:\n id: {}\n name: {}\n position: {:?}\n size: {:?}\n state:{:?}\n",
+            "Monitor:\n id: {}\n name: {}\n {}\n {}\n position: {:?}\n size: {:?}\n state:{:?}\n",
             monitor.id().unwrap(),
             monitor.name().unwrap(),
+            uuid_str,
+            serial_str,
             (monitor.x().unwrap(), monitor.y().unwrap()),
             (monitor.width().unwrap(), monitor.height().unwrap()),
             (

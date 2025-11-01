@@ -1,4 +1,5 @@
 mod capture;
+mod display_info;
 pub mod utils;
 mod wayland_capture;
 mod wayland_video_recorder;

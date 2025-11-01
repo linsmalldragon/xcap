@@ -80,6 +80,50 @@ impl Monitor {
     pub fn is_builtin(&self) -> XCapResult<bool> {
         self.impl_monitor.is_builtin()
     }
+
+    /// Get the display UUID (persistent unique identifier)
+    /// This UUID remains constant across system restarts and display reconnections.
+    /// Currently only supported on macOS.
+    #[cfg(target_os = "macos")]
+    pub fn uuid(&self) -> XCapResult<String> {
+        self.impl_monitor.uuid()
+    }
+
+    /// Get the display serial number
+    /// Some displays may not provide serial number information.
+    /// Currently only supported on macOS.
+    #[cfg(target_os = "macos")]
+    pub fn serial_number(&self) -> XCapResult<String> {
+        self.impl_monitor.serial_number()
+    }
+
+    /// Get the display UUID (persistent unique identifier)
+    /// This UUID remains constant across system restarts and display reconnections.
+    /// Supported on macOS, Windows, and Linux.
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
+    pub fn uuid(&self) -> XCapResult<String> {
+        self.impl_monitor.uuid()
+    }
+
+    /// Get the display serial number
+    /// Some displays may not provide serial number information.
+    /// Supported on macOS, Windows, and Linux.
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
+    pub fn serial_number(&self) -> XCapResult<String> {
+        self.impl_monitor.serial_number()
+    }
+
+    /// Get the display UUID (not supported on this platform)
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    pub fn uuid(&self) -> XCapResult<String> {
+        Err(crate::XCapError::new("UUID is not supported on this platform"))
+    }
+
+    /// Get the display serial number (not supported on this platform)
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    pub fn serial_number(&self) -> XCapResult<String> {
+        Err(crate::XCapError::new("Serial number is not supported on this platform"))
+    }
 }
 
 impl Monitor {

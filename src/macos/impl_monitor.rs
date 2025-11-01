@@ -16,7 +16,7 @@ use crate::{
     video_recorder::Frame,
 };
 
-use super::{capture::capture, impl_video_recorder::ImplVideoRecorder};
+use super::{capture::capture, display_info, impl_video_recorder::ImplVideoRecorder};
 
 #[derive(Debug, Clone)]
 pub(crate) struct ImplMonitor {
@@ -237,5 +237,17 @@ impl ImplMonitor {
 
     pub fn video_recorder(&self) -> XCapResult<(ImplVideoRecorder, Receiver<Frame>)> {
         ImplVideoRecorder::new(self.cg_direct_display_id)
+    }
+
+    /// 获取显示器的 UUID（持久化唯一标识符）
+    /// 这个 UUID 在系统重启和显示器重新连接后保持不变
+    pub fn uuid(&self) -> XCapResult<String> {
+        display_info::get_display_uuid(self.cg_direct_display_id)
+    }
+
+    /// 获取显示器的序列号
+    /// 某些显示器可能不提供序列号信息
+    pub fn serial_number(&self) -> XCapResult<String> {
+        display_info::get_display_serial_number(self.cg_direct_display_id)
     }
 }
