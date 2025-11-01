@@ -39,21 +39,21 @@ impl Monitor {
     pub fn id(&self) -> XCapResult<u32> {
         self.impl_monitor.id()
     }
-    pub fn unique_key(&self) -> String {
+    pub fn unique_key(&self) -> XCapResult<String> {
         // 1. 优先使用序列号（硬件属性，最可靠）
         if let Ok(serial) = self.serial_number() {
             if !serial.is_empty() {
-                return serial;
+                return Ok(serial);
             }
         }
 
         // 2. 备用：使用 UUID
         if let Ok(uuid) = self.uuid() {
-            return uuid;
+            return Ok(uuid);
         }
 
         // 3. 最后：使用显示器 ID
-        self.id().unwrap_or(0).to_string()
+        return self.id().map(|id| id.to_string());
     }
     /// Unique identifier associated with the screen.
     pub fn name(&self) -> XCapResult<String> {
