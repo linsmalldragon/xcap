@@ -39,6 +39,22 @@ impl Monitor {
     pub fn id(&self) -> XCapResult<u32> {
         self.impl_monitor.id()
     }
+    pub fn unique_key(&self) -> String {
+        // 1. 优先使用序列号（硬件属性，最可靠）
+        if let Ok(serial) = self.serial_number() {
+            if !serial.is_empty() {
+                return serial;
+            }
+        }
+
+        // 2. 备用：使用 UUID
+        if let Ok(uuid) = self.uuid() {
+            return uuid;
+        }
+
+        // 3. 最后：使用显示器 ID
+        self.id().unwrap_or(0).to_string()
+    }
     /// Unique identifier associated with the screen.
     pub fn name(&self) -> XCapResult<String> {
         self.impl_monitor.name()
@@ -116,13 +132,17 @@ impl Monitor {
     /// Get the display UUID (not supported on this platform)
     #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
     pub fn uuid(&self) -> XCapResult<String> {
-        Err(crate::XCapError::new("UUID is not supported on this platform"))
+        Err(crate::XCapError::new(
+            "UUID is not supported on this platform",
+        ))
     }
 
     /// Get the display serial number (not supported on this platform)
     #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
     pub fn serial_number(&self) -> XCapResult<String> {
-        Err(crate::XCapError::new("Serial number is not supported on this platform"))
+        Err(crate::XCapError::new(
+            "Serial number is not supported on this platform",
+        ))
     }
 }
 
