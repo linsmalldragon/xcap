@@ -247,8 +247,9 @@ define_class!(
         }
 
         #[unsafe(method(stream:didStopWithError:))]
-        unsafe fn stream_did_stop_with_error(&self, _stream: &SCStream, error: Option<&NSError>) {
-            if let Some(err) = error {
+        unsafe fn stream_did_stop_with_error(&self, _stream: &SCStream, error: *mut NSError) {
+            if !error.is_null() {
+                let err = unsafe { &*error };
                 let _ = self.ivars().tx.send(Err(err.retain()));
             }
         }
