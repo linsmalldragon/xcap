@@ -1,6 +1,6 @@
 use std::{slice, sync::mpsc};
 
-use block2::RcBlock;
+use block2::StackBlock;
 use dispatch2::{DispatchQueue, DispatchQueueAttr};
 use image::RgbaImage;
 use objc2::{
@@ -59,7 +59,12 @@ thread_local! {
     static STREAM_CACHE: std::cell::RefCell<Option<StreamCache>> = std::cell::RefCell::new(None);
 }
 
-pub async fn capture(
+// 缓存 macOS 版本检查结果，避免重复调用
+thread_local! {
+    static SCKIT_AVAILABLE_CACHE: std::cell::Cell<Option<bool>> = std::cell::Cell::new(None);
+}
+
+pub fn capture(
     cg_rect: CGRect,
     list_option: CGWindowListOption,
     window_id: CGWindowID,
@@ -69,7 +74,7 @@ pub async fn capture(
     // 深度优化：快速失败，如果 ScreenCaptureKit 超时或失败，立即回退
     if is_screencapturekit_available() {
         // 尝试使用 ScreenCaptureKit，但设置较短的超时以便快速回退
-        match capture_with_screencapturekit(cg_rect, list_option, window_id, display_id).await {
+        match capture_with_screencapturekit(cg_rect, list_option, window_id, display_id) {
             Ok(image) => return Ok(image),
             Err(_) => {
                 // ScreenCaptureKit 不可用或失败，快速回退到 CGWindowListCreateImage
@@ -78,23 +83,33 @@ pub async fn capture(
         }
     }
     // 回退到传统的 CGWindowListCreateImage 方法（通常更快但已废弃）
-    capture_compatible::capture_with_cgwindowlist(cg_rect, list_option, window_id).await
+    capture_compatible::capture_with_cgwindowlist(cg_rect, list_option, window_id)
 }
 
 /// 检查 macOS 版本是否 >= 12.3 (ScreenCaptureKit 可用)
+/// 使用线程本地缓存避免重复检查
 fn is_screencapturekit_available() -> bool {
-    unsafe {
-        let process_info = NSProcessInfo::processInfo();
-        let version = process_info.operatingSystemVersion();
+    SCKIT_AVAILABLE_CACHE.with(|cache| {
+        if let Some(cached) = cache.get() {
+            return cached;
+        }
 
-        // macOS 12.3 = major 12, minor 3
-        // 或者 major > 12
-        // NSOperatingSystemVersion 是结构体，使用字段访问
-        let major = version.majorVersion;
-        let minor = version.minorVersion;
+        let available = unsafe {
+            let process_info = NSProcessInfo::processInfo();
+            let version = process_info.operatingSystemVersion();
 
-        major > 12 || (major == 12 && minor >= 3)
-    }
+            // macOS 12.3 = major 12, minor 3
+            // 或者 major > 12
+            // NSOperatingSystemVersion 是结构体，使用字段访问
+            let major = version.majorVersion;
+            let minor = version.minorVersion;
+
+            major > 12 || (major == 12 && minor >= 3)
+        };
+
+        cache.set(Some(available));
+        available
+    })
 }
 
 /// 从 CVPixelBuffer 转换为 RgbaImage（优化版本）
@@ -122,19 +137,20 @@ fn pixel_buffer_to_rgba_image(pixel_buffer: &CVPixelBuffer) -> XCapResult<RgbaIm
 
         // 优化：如果 bytes_per_row == width * 4，可以直接使用，无需逐行拷贝
         let expected_row_size = width * 4;
-        let mut buffer = Vec::with_capacity(width * height * 4);
+        let total_size = width * height * 4;
+        let mut buffer = Vec::with_capacity(total_size);
 
         if bytes_per_row == expected_row_size {
             // 最优情况：行对齐，直接拷贝并转换
-            let data = slice::from_raw_parts(base_address as *const u8, width * height * 4);
-            buffer.reserve_exact(width * height * 4);
+            let data = slice::from_raw_parts(base_address as *const u8, total_size);
+            // 优化：reserve_exact 已经在 with_capacity 中完成，这里不需要再次调用
 
             // SIMD 优化：使用 SIMD 指令批量转换 BGRA -> RGBA
             bgra_to_rgba::convert_bgra_to_rgba_simd(data, &mut buffer);
         } else {
             // 需要处理行对齐的情况（较少见，但也可以使用 SIMD 优化）
             let data = slice::from_raw_parts(base_address as *const u8, bytes_per_row * height);
-            buffer.reserve_exact(width * height * 4);
+            // 优化：reserve_exact 已经在 with_capacity 中完成，这里不需要再次调用
 
             // 逐行处理，每行使用 SIMD 优化
             unsafe {
@@ -248,7 +264,7 @@ impl SCStreamOutputDelegate {
     }
 }
 
-async fn fetch_shareable_content(
+fn fetch_shareable_content(
     excluding_desktop_windows: bool,
 ) -> XCapResult<Retained<SCShareableContent>> {
     // 优化：检查线程本地缓存，如果缓存有效且参数匹配，直接返回
@@ -270,7 +286,7 @@ async fn fetch_shareable_content(
 
     // 缓存未命中或已过期，重新获取
     let (tx, rx) = mpsc::channel();
-    let completion = RcBlock::new(
+    let completion = StackBlock::new(
         move |content_ptr: *mut SCShareableContent, error_ptr: *mut NSError| {
             let result = unsafe {
                 if let Some(err) = error_ptr.as_ref() {
@@ -294,28 +310,16 @@ async fn fetch_shareable_content(
         );
     }
 
-    // 深度优化：减少等待时间到 500ms，通常系统响应很快
-    // 注意：Retained<SCShareableContent> 在 Objective-C 运行时中是线程安全的
-    // 由于 Retained 类型不是 Send，我们在当前线程上等待，使用 yield_now 来让出控制权
-    let mut content = None;
-    let start = std::time::Instant::now();
-    while content.is_none() && start.elapsed() < std::time::Duration::from_millis(500) {
-        match rx.try_recv() {
-            Ok(result) => {
-                content = Some(result);
-                break;
-            }
-            Err(mpsc::TryRecvError::Empty) => {
-                tokio::task::yield_now().await;
-            }
-            Err(mpsc::TryRecvError::Disconnected) => {
-                return Err(XCapError::new("Channel disconnected"));
-            }
+    // 同步等待：使用阻塞接收，设置超时（优化：缩短到 200ms，通常系统响应很快）
+    let content = match rx.recv_timeout(std::time::Duration::from_millis(200)) {
+        Ok(result) => result,
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            return Err(XCapError::new("Timed out while fetching ScreenCaptureKit shareable content"));
         }
-    }
-    let content = content.ok_or_else(|| {
-        XCapError::new("Timed out while fetching ScreenCaptureKit shareable content")
-    })?;
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            return Err(XCapError::new("Channel disconnected"));
+        }
+    };
 
     let content = match content {
         Ok(content) => content,
@@ -332,7 +336,7 @@ async fn fetch_shareable_content(
 }
 
 /// 使用 ScreenCaptureKit 进行屏幕捕获
-async fn capture_with_screencapturekit(
+fn capture_with_screencapturekit(
     cg_rect: CGRect,
     _list_option: CGWindowListOption,
     _window_id: CGWindowID,
@@ -340,7 +344,7 @@ async fn capture_with_screencapturekit(
 ) -> XCapResult<RgbaImage> {
     unsafe {
         // 1. 获取可共享内容
-        let shareable_content = fetch_shareable_content(false).await?;
+        let shareable_content = fetch_shareable_content(false)?;
 
         // 2. 获取显示器列表
         let displays = shareable_content.displays();
@@ -348,7 +352,7 @@ async fn capture_with_screencapturekit(
             return Err(XCapError::new("No displays found"));
         }
 
-        // 3. 找到对应的显示器（如果提供了 display_id，直接使用；否则通过 rect 查找）
+        // 3. 找到对应的显示器（优化：如果提供了 display_id，直接使用；否则通过 rect 查找）
         let target_display_id = display_id.unwrap_or_else(|| {
             find_display_for_rect(cg_rect).unwrap_or_else(|_| {
                 use objc2_core_graphics::CGMainDisplayID;
@@ -356,9 +360,9 @@ async fn capture_with_screencapturekit(
             })
         });
 
-        // 深度优化：直接查找显示器，减少变量重命名和 Option 的 unwrap 开销
-        let mut display: Option<Retained<objc2_screen_capture_kit::SCDisplay>> = None;
+        // 优化：直接查找目标显示器，避免不必要的遍历
         let display_count = displays.count();
+        let mut display: Option<Retained<objc2_screen_capture_kit::SCDisplay>> = None;
         for i in 0..display_count {
             let d = displays.objectAtIndex(i);
             if d.displayID() == target_display_id {
@@ -458,7 +462,7 @@ async fn capture_with_screencapturekit(
         // 9. 启动流（如果需要）
         if need_start {
             let (start_tx, start_rx) = mpsc::channel();
-            let start_block = RcBlock::new(move |error_ptr: *mut NSError| {
+            let start_block = StackBlock::new(move |error_ptr: *mut NSError| {
                 let result = unsafe {
                     if let Some(err) = error_ptr.as_ref() {
                         Err(err.retain())
@@ -471,28 +475,9 @@ async fn capture_with_screencapturekit(
 
             stream.startCaptureWithCompletionHandler(Some(&start_block));
 
-            // 深度优化：减少启动等待时间到 500ms，通常启动很快
-            // 注意：Result 类型在 Objective-C 运行时中是线程安全的
-            // 由于 Retained 类型不是 Send，我们在当前线程上等待，使用 yield_now 来让出控制权
-            let mut start_result = None;
-            let start = std::time::Instant::now();
-            while start_result.is_none() && start.elapsed() < std::time::Duration::from_millis(500)
-            {
-                match start_rx.try_recv() {
-                    Ok(result) => {
-                        start_result = Some(result);
-                        break;
-                    }
-                    Err(mpsc::TryRecvError::Empty) => {
-                        tokio::task::yield_now().await;
-                    }
-                    Err(mpsc::TryRecvError::Disconnected) => {
-                        return Err(XCapError::new("Channel disconnected"));
-                    }
-                }
-            }
-            match start_result {
-                Some(Ok(())) => {
+            // 同步等待：使用阻塞接收，设置超时（优化：缩短到 200ms）
+            match start_rx.recv_timeout(std::time::Duration::from_millis(200)) {
+                Ok(Ok(())) => {
                     // 更新缓存状态为已启动
                     STREAM_CACHE.with(|cache| {
                         if let Some(ref mut cached) = *cache.borrow_mut() {
@@ -500,38 +485,30 @@ async fn capture_with_screencapturekit(
                         }
                     });
                 }
-                Some(Err(err)) => {
+                Ok(Err(err)) => {
                     return Err(XCapError::new(err.localizedDescription().to_string()));
                 }
-                None => {
+                Err(mpsc::RecvTimeoutError::Timeout) => {
                     return Err(XCapError::new(
                         "Timed out while starting ScreenCaptureKit stream",
                     ));
                 }
-            }
-        }
-
-        // 10. 等待一帧数据（深度优化：减少等待时间到 500ms，通常第一帧很快就能获取到）
-        // 注意：Retained<CVPixelBuffer> 在 Objective-C 运行时中是线程安全的
-        // 由于 Retained 类型不是 Send，我们在当前线程上等待，使用 yield_now 来让出控制权
-        let mut frame_result = None;
-        let start = std::time::Instant::now();
-        while frame_result.is_none() && start.elapsed() < std::time::Duration::from_millis(500) {
-            match frame_rx.try_recv() {
-                Ok(result) => {
-                    frame_result = Some(result);
-                    break;
-                }
-                Err(mpsc::TryRecvError::Empty) => {
-                    tokio::task::yield_now().await;
-                }
-                Err(mpsc::TryRecvError::Disconnected) => {
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
                     return Err(XCapError::new("Channel disconnected"));
                 }
             }
         }
-        let frame_result = frame_result
-            .ok_or_else(|| XCapError::new("Timeout waiting for ScreenCaptureKit frame"))?;
+
+        // 10. 等待一帧数据（同步等待：使用阻塞接收，设置超时（优化：缩短到 200ms））
+        let frame_result = match frame_rx.recv_timeout(std::time::Duration::from_millis(200)) {
+            Ok(result) => result,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                return Err(XCapError::new("Timeout waiting for ScreenCaptureKit frame"));
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return Err(XCapError::new("Channel disconnected"));
+            }
+        };
 
         let pixel_buffer = match frame_result {
             Ok(buffer) => buffer,

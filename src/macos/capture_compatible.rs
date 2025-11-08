@@ -14,18 +14,13 @@ use super::bgra_to_rgba::convert_bgra_to_rgba_row;
 
 /// 使用 CGWindowListCreateImage 进行屏幕捕获（传统方法，已废弃）
 /// 作为 ScreenCaptureKit 的回退方案
-/// 使用 spawn_blocking 在后台线程执行，避免阻塞异步运行时
 #[allow(deprecated)]
-pub async fn capture_with_cgwindowlist(
+pub fn capture_with_cgwindowlist(
     cg_rect: CGRect,
     list_option: CGWindowListOption,
     window_id: CGWindowID,
 ) -> XCapResult<RgbaImage> {
-    tokio::task::spawn_blocking(move || {
-        capture_with_cgwindowlist_sync(cg_rect, list_option, window_id)
-    })
-    .await
-    .map_err(|e| XCapError::new(format!("spawn_blocking failed: {}", e)))?
+    capture_with_cgwindowlist_sync(cg_rect, list_option, window_id)
 }
 
 /// 同步版本的 CGWindowListCreateImage 捕获

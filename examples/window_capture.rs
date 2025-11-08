@@ -6,8 +6,7 @@ fn normalized(filename: &str) -> String {
     filename.replace(['|', '\\', ':', '/'], "")
 }
 
-#[tokio::main]
-async fn main() {
+fn main() {
     let start = Instant::now();
     let windows = Window::all().unwrap();
 
@@ -35,7 +34,7 @@ async fn main() {
             )
         );
 
-        let image = window.capture_image().await.unwrap();
+        let image = window.capture_image().unwrap();
         image
             .save(format!(
                 "target/windows/window-{}-{}.png",
