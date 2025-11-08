@@ -1,4 +1,4 @@
-use std::{slice, sync::mpsc, time::Instant};
+use std::{collections::HashMap, slice, sync::mpsc, time::Instant};
 
 use block2::StackBlock;
 use dispatch2::{DispatchQueue, DispatchQueueAttr};
@@ -29,6 +29,17 @@ use crate::error::{XCapError, XCapResult};
 use super::bgra_to_rgba;
 use super::capture_compatible;
 
+// 流缓存结构：复用 SCStream 以避免重复创建和启动
+// 注意：display_id, width, height 虽然现在由 HashMap 的键管理，但保留它们有助于调试
+#[allow(dead_code)]
+struct StreamCache {
+    stream: Retained<SCStream>,
+    display_id: CGDirectDisplayID,
+    width: usize,
+    height: usize,
+    is_started: bool,
+}
+
 // 缓存 shareable_content 以减少重复获取的开销
 //
 // 注意：
@@ -46,18 +57,10 @@ thread_local! {
     static SHAREABLE_CONTENT_CACHE: std::cell::RefCell<Option<(Retained<SCShareableContent>, bool)>> = std::cell::RefCell::new(None);
 }
 
-// 流缓存结构：复用 SCStream 以避免重复创建和启动
-struct StreamCache {
-    stream: Retained<SCStream>,
-    display_id: CGDirectDisplayID,
-    width: usize,
-    height: usize,
-    is_started: bool,
-}
-
-// 线程本地流缓存，按 display_id 和尺寸缓存
+// 线程本地流缓存，按 display_id 和尺寸缓存多个显示器的流
+// 使用 HashMap 支持在同一线程中缓存多个显示器的流
 thread_local! {
-    static STREAM_CACHE: std::cell::RefCell<Option<StreamCache>> = std::cell::RefCell::new(None);
+    static STREAM_CACHE: std::cell::RefCell<HashMap<(CGDirectDisplayID, usize, usize), StreamCache>> = std::cell::RefCell::new(HashMap::new());
 }
 
 // 缓存 macOS 版本检查结果，避免重复调用
@@ -416,17 +419,14 @@ fn capture_with_screencapturekit(
 
         // 7-9. 复用流或创建新流
         let t8 = Instant::now();
+        let cache_key = (target_display_id, width, height);
         let (stream, need_start): (Retained<SCStream>, bool) =
             STREAM_CACHE.with(|cache| -> XCapResult<(Retained<SCStream>, bool)> {
                 let mut cache_ref = cache.borrow_mut();
 
                 // 检查缓存：如果 display_id 和尺寸匹配，且流已启动，直接复用
-                if let Some(ref cached) = *cache_ref {
-                    if cached.display_id == target_display_id
-                        && cached.width == width
-                        && cached.height == height
-                        && cached.is_started
-                    {
+                if let Some(cached) = cache_ref.get(&cache_key) {
+                    if cached.is_started {
                         return Ok((cached.stream.clone(), false));
                     }
                 }
@@ -445,14 +445,17 @@ fn capture_with_screencapturekit(
                     None,
                 );
 
-                // 更新缓存
-                *cache_ref = Some(StreamCache {
-                    stream: stream.clone(),
-                    display_id: target_display_id,
-                    width,
-                    height,
-                    is_started: false, // 稍后会启动
-                });
+                // 更新缓存：使用 (display_id, width, height) 作为键，支持多个显示器
+                cache_ref.insert(
+                    cache_key,
+                    StreamCache {
+                        stream: stream.clone(),
+                        display_id: target_display_id,
+                        width,
+                        height,
+                        is_started: false, // 稍后会启动
+                    },
+                );
 
                 Ok((stream, true))
             })?;
@@ -491,7 +494,7 @@ fn capture_with_screencapturekit(
                 Ok(Ok(())) => {
                     // 更新缓存状态为已启动
                     STREAM_CACHE.with(|cache| {
-                        if let Some(ref mut cached) = *cache.borrow_mut() {
+                        if let Some(cached) = cache.borrow_mut().get_mut(&cache_key) {
                             cached.is_started = true;
                         }
                     });
