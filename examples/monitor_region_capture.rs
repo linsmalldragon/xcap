@@ -6,7 +6,8 @@ fn normalized(filename: String) -> String {
     filename.replace(['|', '\\', ':', '/'], "")
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let monitors = Monitor::all()?;
     dir::create_all("target/monitors", true).unwrap();
 
@@ -27,7 +28,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Capture the region
         let start = Instant::now();
-        let image = monitor.capture_region(x, y, region_width, region_height)?;
+        let image = monitor.capture_region(x, y, region_width, region_height).await?;
 
         // Get monitor name for the filename
         let monitor_name = monitor

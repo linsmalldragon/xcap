@@ -148,12 +148,31 @@ impl Monitor {
 
 impl Monitor {
     /// Capture image of the monitor
-    pub fn capture_image(&self) -> XCapResult<RgbaImage> {
-        self.impl_monitor.capture_image()
+    #[cfg(target_os = "macos")]
+    pub async fn capture_image(&self) -> XCapResult<RgbaImage> {
+        self.impl_monitor.capture_image().await
     }
 
-    pub fn capture_region(&self, x: u32, y: u32, width: u32, height: u32) -> XCapResult<RgbaImage> {
-        self.impl_monitor.capture_region(x, y, width, height)
+    /// Capture image of the monitor
+    #[cfg(not(target_os = "macos"))]
+    pub async fn capture_image(&self) -> XCapResult<RgbaImage> {
+        let impl_monitor = self.impl_monitor.clone();
+        tokio::task::spawn_blocking(move || impl_monitor.capture_image())
+            .await
+            .map_err(|e| crate::XCapError::new(format!("spawn_blocking failed: {}", e)))?
+    }
+
+    #[cfg(target_os = "macos")]
+    pub async fn capture_region(&self, x: u32, y: u32, width: u32, height: u32) -> XCapResult<RgbaImage> {
+        self.impl_monitor.capture_region(x, y, width, height).await
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    pub async fn capture_region(&self, x: u32, y: u32, width: u32, height: u32) -> XCapResult<RgbaImage> {
+        let impl_monitor = self.impl_monitor.clone();
+        tokio::task::spawn_blocking(move || impl_monitor.capture_region(x, y, width, height))
+            .await
+            .map_err(|e| crate::XCapError::new(format!("spawn_blocking failed: {}", e)))?
     }
 
     pub fn video_recorder(&self) -> XCapResult<(VideoRecorder, Receiver<Frame>)> {
@@ -169,8 +188,8 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn test_capture_region_out_of_bounds() {
+    #[tokio::test]
+    async fn test_capture_region_out_of_bounds() {
         let monitors = Monitor::all().unwrap();
         let monitor = &monitors[0]; // Get first monitor
 
@@ -180,7 +199,7 @@ mod tests {
         let width = monitor.width().unwrap();
         let height = monitor.height().unwrap();
 
-        let result = monitor.capture_region(x, y, width, height);
+        let result = monitor.capture_region(x, y, width, height).await;
 
         match result {
             Err(XCapError::InvalidCaptureRegion(_)) => (),

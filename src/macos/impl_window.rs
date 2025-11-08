@@ -366,7 +366,7 @@ impl ImplWindow {
         }
     }
 
-    pub fn capture_image(&self) -> XCapResult<RgbaImage> {
+    pub async fn capture_image(&self) -> XCapResult<RgbaImage> {
         let window_cf_dictionary = get_window_cf_dictionary(self.window_id)?;
 
         let cg_rect = get_window_cg_rect(window_cf_dictionary.as_ref())?;
@@ -375,6 +375,8 @@ impl ImplWindow {
             cg_rect,
             CGWindowListOption::OptionIncludingWindow,
             self.window_id,
+            None, // 窗口捕获不需要 display_id
         )
+        .await
     }
 }

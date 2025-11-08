@@ -196,13 +196,14 @@ impl ImplMonitor {
         Ok(is_builtin)
     }
 
-    pub fn capture_image(&self) -> XCapResult<RgbaImage> {
+    pub async fn capture_image(&self) -> XCapResult<RgbaImage> {
         let cg_rect = unsafe { CGDisplayBounds(self.cg_direct_display_id) };
 
-        capture(cg_rect, CGWindowListOption::OptionAll, 0)
+        // 优化：直接传递 display_id，避免在 capture 函数中重复查找显示器
+        capture(cg_rect, CGWindowListOption::OptionAll, 0, Some(self.cg_direct_display_id)).await
     }
 
-    pub fn capture_region(&self, x: u32, y: u32, width: u32, height: u32) -> XCapResult<RgbaImage> {
+    pub async fn capture_region(&self, x: u32, y: u32, width: u32, height: u32) -> XCapResult<RgbaImage> {
         // Validate region bounds
         let monitor_x = self.x()?;
         let monitor_y = self.y()?;
@@ -232,7 +233,8 @@ impl ImplMonitor {
             },
         };
 
-        capture(cg_rect, CGWindowListOption::OptionAll, 0)
+        // 优化：直接传递 display_id，避免在 capture 函数中重复查找显示器
+        capture(cg_rect, CGWindowListOption::OptionAll, 0, Some(self.cg_direct_display_id)).await
     }
 
     pub fn video_recorder(&self) -> XCapResult<(ImplVideoRecorder, Receiver<Frame>)> {

@@ -81,7 +81,16 @@ impl Window {
 }
 
 impl Window {
-    pub fn capture_image(&self) -> XCapResult<RgbaImage> {
-        self.impl_window.capture_image()
+    #[cfg(target_os = "macos")]
+    pub async fn capture_image(&self) -> XCapResult<RgbaImage> {
+        self.impl_window.capture_image().await
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    pub async fn capture_image(&self) -> XCapResult<RgbaImage> {
+        let impl_window = self.impl_window.clone();
+        tokio::task::spawn_blocking(move || impl_window.capture_image())
+            .await
+            .map_err(|e| crate::XCapError::new(format!("spawn_blocking failed: {}", e)))?
     }
 }
