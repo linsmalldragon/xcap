@@ -1,8 +1,4 @@
-use std::{
-    slice,
-    sync::mpsc,
-    time::Instant,
-};
+use std::{slice, sync::mpsc};
 
 use block2::RcBlock;
 use dispatch2::{DispatchQueue, DispatchQueueAttr};
@@ -12,9 +8,7 @@ use objc2::{
     runtime::ProtocolObject,
 };
 use objc2_core_foundation::CGRect;
-use objc2_core_graphics::{
-    CGDirectDisplayID, CGDisplayBounds, CGWindowID, CGWindowListOption,
-};
+use objc2_core_graphics::{CGDirectDisplayID, CGDisplayBounds, CGWindowID, CGWindowListOption};
 use objc2_core_media::CMSampleBuffer;
 use objc2_core_video::{
     CVPixelBuffer, CVPixelBufferGetBaseAddress, CVPixelBufferGetBytesPerRow,
@@ -33,7 +27,6 @@ use crate::error::{XCapError, XCapResult};
 
 use super::bgra_to_rgba;
 use super::capture_compatible;
-
 
 // 缓存 shareable_content 以减少重复获取的开销
 //
@@ -320,7 +313,9 @@ async fn fetch_shareable_content(
             }
         }
     }
-    let content = content.ok_or_else(|| XCapError::new("Timed out while fetching ScreenCaptureKit shareable content"))?;
+    let content = content.ok_or_else(|| {
+        XCapError::new("Timed out while fetching ScreenCaptureKit shareable content")
+    })?;
 
     let content = match content {
         Ok(content) => content,
@@ -344,23 +339,16 @@ async fn capture_with_screencapturekit(
     display_id: Option<CGDirectDisplayID>,
 ) -> XCapResult<RgbaImage> {
     unsafe {
-        let total_start = Instant::now();
-
         // 1. 获取可共享内容
-        let t1 = Instant::now();
         let shareable_content = fetch_shareable_content(false).await?;
-        eprintln!("[耗时] 1. fetch_shareable_content: {:?}", t1.elapsed());
 
         // 2. 获取显示器列表
-        let t2 = Instant::now();
         let displays = shareable_content.displays();
         if displays.count() == 0 {
             return Err(XCapError::new("No displays found"));
         }
-        eprintln!("[耗时] 2. 获取显示器列表: {:?}", t2.elapsed());
 
         // 3. 找到对应的显示器（如果提供了 display_id，直接使用；否则通过 rect 查找）
-        let t3 = Instant::now();
         let target_display_id = display_id.unwrap_or_else(|| {
             find_display_for_rect(cg_rect).unwrap_or_else(|_| {
                 use objc2_core_graphics::CGMainDisplayID;
@@ -379,10 +367,8 @@ async fn capture_with_screencapturekit(
             }
         }
         let display = display.ok_or_else(|| XCapError::new("Target display not found"))?;
-        eprintln!("[耗时] 3. 查找显示器: {:?}", t3.elapsed());
 
         // 4. 创建内容过滤器
-        let t4 = Instant::now();
         let excluding_windows_filter: Retained<
             objc2_foundation::NSArray<objc2_screen_capture_kit::SCWindow>,
         > = objc2_foundation::NSArray::new();
@@ -392,10 +378,8 @@ async fn capture_with_screencapturekit(
             display.as_ref(),
             excluding_windows_filter.as_ref(),
         );
-        eprintln!("[耗时] 4. 创建内容过滤器: {:?}", t4.elapsed());
 
         // 5. 创建流配置
-        let t5 = Instant::now();
         // 优化：使用 cg_rect 的尺寸，避免重复调用 CGDisplayBounds
         // 如果 cg_rect 尺寸为 0，说明需要获取完整显示器尺寸
         let (width, height) = if cg_rect.size.width > 0.0 && cg_rect.size.height > 0.0 {
@@ -411,63 +395,56 @@ async fn capture_with_screencapturekit(
                 bounds.size.height.round() as usize,
             )
         };
-        eprintln!("[耗时] 5. 创建流配置: {:?}", t5.elapsed());
 
         // 6. 创建输出处理器（每次都需要新的，因为需要新的 channel）
-        let t6 = Instant::now();
         let (frame_tx, frame_rx) = mpsc::channel();
         let output_delegate = SCStreamOutputDelegate::new(frame_tx);
         let output_delegate_protocol =
             ProtocolObject::<dyn SCStreamOutput>::from_ref(&*output_delegate);
-        eprintln!("[耗时] 6. 创建输出处理器: {:?}", t6.elapsed());
 
         // 7-9. 复用流或创建新流
-        let t7 = Instant::now();
-        let (stream, need_start): (Retained<SCStream>, bool) = STREAM_CACHE.with(|cache| -> XCapResult<(Retained<SCStream>, bool)> {
-            let mut cache_ref = cache.borrow_mut();
+        let (stream, need_start): (Retained<SCStream>, bool) =
+            STREAM_CACHE.with(|cache| -> XCapResult<(Retained<SCStream>, bool)> {
+                let mut cache_ref = cache.borrow_mut();
 
-            // 检查缓存：如果 display_id 和尺寸匹配，且流已启动，直接复用
-            if let Some(ref cached) = *cache_ref {
-                if cached.display_id == target_display_id
-                    && cached.width == width
-                    && cached.height == height
-                    && cached.is_started
-                {
-                    eprintln!("[流复用] 复用已启动的流");
-                    return Ok((cached.stream.clone(), false));
+                // 检查缓存：如果 display_id 和尺寸匹配，且流已启动，直接复用
+                if let Some(ref cached) = *cache_ref {
+                    if cached.display_id == target_display_id
+                        && cached.width == width
+                        && cached.height == height
+                        && cached.is_started
+                    {
+                        return Ok((cached.stream.clone(), false));
+                    }
                 }
-            }
 
-            // 缓存未命中或需要重新创建，创建新流
-            eprintln!("[流复用] 创建新流");
-            let stream_config = SCStreamConfiguration::new();
-            stream_config.setWidth(width.max(1));
-            stream_config.setHeight(height.max(1));
-            stream_config.setPixelFormat(kCVPixelFormatType_32BGRA);
-            stream_config.setQueueDepth(1);
+                // 缓存未命中或需要重新创建，创建新流
+                let stream_config = SCStreamConfiguration::new();
+                stream_config.setWidth(width.max(1));
+                stream_config.setHeight(height.max(1));
+                stream_config.setPixelFormat(kCVPixelFormatType_32BGRA);
+                stream_config.setQueueDepth(1);
 
-            let stream = SCStream::initWithFilter_configuration_delegate(
-                SCStream::alloc(),
-                content_filter.as_ref(),
-                stream_config.as_ref(),
-                None,
-            );
+                let stream = SCStream::initWithFilter_configuration_delegate(
+                    SCStream::alloc(),
+                    content_filter.as_ref(),
+                    stream_config.as_ref(),
+                    None,
+                );
 
-            // 更新缓存
-            *cache_ref = Some(StreamCache {
-                stream: stream.clone(),
-                display_id: target_display_id,
-                width,
-                height,
-                is_started: false, // 稍后会启动
-            });
+                // 更新缓存
+                *cache_ref = Some(StreamCache {
+                    stream: stream.clone(),
+                    display_id: target_display_id,
+                    width,
+                    height,
+                    is_started: false, // 稍后会启动
+                });
 
-            Ok((stream, true))
-        })?;
-        eprintln!("[耗时] 7. 创建/复用流: {:?}", t7.elapsed());
+                Ok((stream, true))
+            })?;
 
         // 8. 添加输出（每次都需要新的 output_delegate 和队列）
-        let t8 = Instant::now();
         let output_queue = DispatchQueue::new("SCStreamOutputQueue", DispatchQueueAttr::SERIAL);
         let output_queue_ref: &DispatchQueue = output_queue.as_ref();
         stream
@@ -477,10 +454,8 @@ async fn capture_with_screencapturekit(
                 Some(output_queue_ref),
             )
             .map_err(|err| XCapError::new(err.localizedDescription().to_string()))?;
-        eprintln!("[耗时] 8. 添加输出: {:?}", t8.elapsed());
 
         // 9. 启动流（如果需要）
-        let t9 = Instant::now();
         if need_start {
             let (start_tx, start_rx) = mpsc::channel();
             let start_block = RcBlock::new(move |error_ptr: *mut NSError| {
@@ -499,10 +474,10 @@ async fn capture_with_screencapturekit(
             // 深度优化：减少启动等待时间到 500ms，通常启动很快
             // 注意：Result 类型在 Objective-C 运行时中是线程安全的
             // 由于 Retained 类型不是 Send，我们在当前线程上等待，使用 yield_now 来让出控制权
-            let t9_wait = Instant::now();
             let mut start_result = None;
             let start = std::time::Instant::now();
-            while start_result.is_none() && start.elapsed() < std::time::Duration::from_millis(500) {
+            while start_result.is_none() && start.elapsed() < std::time::Duration::from_millis(500)
+            {
                 match start_rx.try_recv() {
                     Ok(result) => {
                         start_result = Some(result);
@@ -534,19 +509,11 @@ async fn capture_with_screencapturekit(
                     ));
                 }
             }
-            eprintln!(
-                "[耗时] 9. 启动流 (等待): {:?}, 总计: {:?}",
-                t9_wait.elapsed(),
-                t9.elapsed()
-            );
-        } else {
-            eprintln!("[耗时] 9. 启动流: 已复用，跳过启动");
         }
 
         // 10. 等待一帧数据（深度优化：减少等待时间到 500ms，通常第一帧很快就能获取到）
         // 注意：Retained<CVPixelBuffer> 在 Objective-C 运行时中是线程安全的
         // 由于 Retained 类型不是 Send，我们在当前线程上等待，使用 yield_now 来让出控制权
-        let t10 = Instant::now();
         let mut frame_result = None;
         let start = std::time::Instant::now();
         while frame_result.is_none() && start.elapsed() < std::time::Duration::from_millis(500) {
@@ -563,10 +530,9 @@ async fn capture_with_screencapturekit(
                 }
             }
         }
-        let frame_result = frame_result.ok_or_else(|| XCapError::new("Timeout waiting for ScreenCaptureKit frame"))?;
-        eprintln!("[耗时] 10. 等待一帧数据: {:?}", t10.elapsed());
+        let frame_result = frame_result
+            .ok_or_else(|| XCapError::new("Timeout waiting for ScreenCaptureKit frame"))?;
 
-        let t11 = Instant::now();
         let pixel_buffer = match frame_result {
             Ok(buffer) => buffer,
             Err(err) => {
@@ -575,16 +541,12 @@ async fn capture_with_screencapturekit(
         };
         // 优化：不停止流，保持运行状态以便下次复用
         // 只移除当前的 output，流继续运行
-        let _ = stream
-            .removeStreamOutput_type_error(output_delegate_protocol.as_ref(), SCStreamOutputType::Screen);
-        eprintln!("[耗时] 11. 处理 pixel_buffer: {:?}", t11.elapsed());
+        let _ = stream.removeStreamOutput_type_error(
+            output_delegate_protocol.as_ref(),
+            SCStreamOutputType::Screen,
+        );
 
         // 12. 转换为 RgbaImage
-        let t12 = Instant::now();
-        let result = pixel_buffer_to_rgba_image(pixel_buffer.as_ref());
-        eprintln!("[耗时] 12. 转换为 RgbaImage: {:?}", t12.elapsed());
-        eprintln!("[耗时] 总计: {:?}", total_start.elapsed());
-        result
+        pixel_buffer_to_rgba_image(pixel_buffer.as_ref())
     }
 }
-
