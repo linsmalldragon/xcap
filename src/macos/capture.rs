@@ -4,7 +4,7 @@ use std::{
     time::Instant,
 };
 
-use block2::StackBlock;
+use block2::RcBlock;
 use dispatch2::{DispatchQueue, DispatchQueueAttr};
 use image::RgbaImage;
 use objc2::{
@@ -277,7 +277,7 @@ async fn fetch_shareable_content(
 
     // 缓存未命中或已过期，重新获取
     let (tx, rx) = mpsc::channel();
-    let completion = StackBlock::new(
+    let completion = RcBlock::new(
         move |content_ptr: *mut SCShareableContent, error_ptr: *mut NSError| {
             let result = unsafe {
                 if let Some(err) = error_ptr.as_ref() {
@@ -291,8 +291,7 @@ async fn fetch_shareable_content(
 
             let _ = tx.send(result);
         },
-    )
-    .copy();
+    );
 
     unsafe {
         SCShareableContent::getShareableContentExcludingDesktopWindows_onScreenWindowsOnly_completionHandler(
@@ -484,7 +483,7 @@ async fn capture_with_screencapturekit(
         let t9 = Instant::now();
         if need_start {
             let (start_tx, start_rx) = mpsc::channel();
-            let start_block = StackBlock::new(move |error_ptr: *mut NSError| {
+            let start_block = RcBlock::new(move |error_ptr: *mut NSError| {
                 let result = unsafe {
                     if let Some(err) = error_ptr.as_ref() {
                         Err(err.retain())
@@ -493,8 +492,7 @@ async fn capture_with_screencapturekit(
                     }
                 };
                 let _ = start_tx.send(result);
-            })
-            .copy();
+            });
 
             stream.startCaptureWithCompletionHandler(Some(&start_block));
 

@@ -10,6 +10,8 @@ use objc2_core_graphics::{
 
 use crate::error::{XCapError, XCapResult};
 
+use super::bgra_to_rgba::convert_bgra_to_rgba_row;
+
 /// 使用 CGWindowListCreateImage 进行屏幕捕获（传统方法，已废弃）
 /// 作为 ScreenCaptureKit 的回退方案
 /// 使用 spawn_blocking 在后台线程执行，避免阻塞异步运行时
@@ -59,22 +61,18 @@ fn capture_with_cgwindowlist_sync(
         let mut buffer = Vec::with_capacity(width * height * 4);
         buffer.reserve_exact(width * height * 4);
 
-        // 优化：在拷贝的同时进行 BGRA -> RGBA 转换
-        unsafe {
-            let ptr: *mut u8 = buffer.as_mut_ptr();
-            let mut dst_offset = 0;
-            for row in data.chunks_exact(bytes_per_row) {
-                let row_data = &row[..width * 4];
-                for chunk in row_data.chunks_exact(4) {
-                    *ptr.add(dst_offset) = chunk[2]; // R
-                    *ptr.add(dst_offset + 1) = chunk[1]; // G
-                    *ptr.add(dst_offset + 2) = chunk[0]; // B
-                    *ptr.add(dst_offset + 3) = chunk[3]; // A
-                    dst_offset += 4;
-                }
-            }
-            buffer.set_len(width * height * 4);
+        // 优化：使用 SIMD 优化的 BGRA -> RGBA 转换
+        let dst_ptr: *mut u8 = buffer.as_mut_ptr();
+        let mut dst_offset = 0;
+        for row in data.chunks_exact(bytes_per_row) {
+            let row_data = &row[..width * 4];
+            let src_ptr = row_data.as_ptr();
+            let dst_row_ptr = dst_ptr.add(dst_offset);
+            // 使用 SIMD 优化的行转换函数
+            convert_bgra_to_rgba_row(src_ptr, dst_row_ptr, width);
+            dst_offset += width * 4;
         }
+        buffer.set_len(width * height * 4);
 
         RgbaImage::from_raw(width as u32, height as u32, buffer)
             .ok_or_else(|| XCapError::new("RgbaImage::from_raw failed"))
