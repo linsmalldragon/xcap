@@ -1,4 +1,4 @@
-mod bgra_to_rgba;
+pub mod bgra_to_rgba;
 mod capture;
 mod capture_compatible;
 mod display_info;
