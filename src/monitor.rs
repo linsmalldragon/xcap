@@ -26,6 +26,11 @@ impl Monitor {
 
         Ok(monitors)
     }
+    pub fn from_unique_key(unique_key: String) -> XCapResult<Monitor> {
+        let impl_monitor = ImplMonitor::from_unique_key(unique_key)?;
+
+        Ok(Monitor::new(impl_monitor))
+    }
 
     pub fn from_point(x: i32, y: i32) -> XCapResult<Monitor> {
         let impl_monitor = ImplMonitor::from_point(x, y)?;

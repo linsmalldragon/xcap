@@ -32,6 +32,29 @@ fn main() {
                 monitor.is_builtin().unwrap()
             )
         );
+
+        // 使用序列号反查 from_unique_key
+        if let Ok(serial) = monitor.serial_number() {
+            if !serial.is_empty() {
+                println!("\n=== 使用 from_unique_key 反查序列号: {} ===", serial);
+                let lookup_start = Instant::now();
+                match Monitor::from_unique_key(serial.clone()) {
+                    Ok(found_monitor) => {
+                        let lookup_duration = lookup_start.elapsed();
+                        println!("✓ 成功找到显示器 (耗时: {:?}):", lookup_duration);
+                        println!("  id: {}", found_monitor.id().unwrap());
+                        println!("  name: {}", found_monitor.name().unwrap());
+                        println!("  position: {:?}", (found_monitor.x().unwrap(), found_monitor.y().unwrap()));
+                        println!("  size: {:?}", (found_monitor.width().unwrap(), found_monitor.height().unwrap()));
+                    }
+                    Err(e) => {
+                        let lookup_duration = lookup_start.elapsed();
+                        println!("✗ 查找失败 (耗时: {:?}): {}", lookup_duration, e);
+                    }
+                }
+                println!();
+            }
+        }
     }
 
     let monitor = Monitor::from_point(100, 100).unwrap();

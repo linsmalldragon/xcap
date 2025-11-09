@@ -258,6 +258,38 @@ impl ImplMonitor {
 
         Err(XCapError::new("Not found monitor"))
     }
+
+    pub fn from_unique_key(unique_key: String) -> XCapResult<ImplMonitor> {
+        let monitors = ImplMonitor::all()?;
+
+        for monitor in monitors {
+            // 1. 优先检查序列号（硬件属性，最可靠）
+            if let Ok(serial) = monitor.serial_number() {
+                if !serial.is_empty() && serial == unique_key {
+                    return Ok(monitor);
+                }
+            }
+
+            // 2. 检查 UUID
+            if let Ok(uuid) = monitor.uuid() {
+                if uuid == unique_key {
+                    return Ok(monitor);
+                }
+            }
+
+            // 3. 最后检查显示器 ID
+            if let Ok(id) = monitor.id() {
+                if id.to_string() == unique_key {
+                    return Ok(monitor);
+                }
+            }
+        }
+
+        Err(XCapError::new(format!(
+            "Monitor with unique_key '{}' not found",
+            unique_key
+        )))
+    }
 }
 
 impl ImplMonitor {
