@@ -9,7 +9,6 @@ use objc2_core_graphics::{
     CGDisplayBounds, CGMainDisplayID, CGRectContainsPoint, CGRectIntersectsRect,
     CGRectMakeWithDictionaryRepresentation, CGWindowListCopyWindowInfo, CGWindowListOption,
 };
-use objc2_foundation::{NSNumber, NSString};
 
 use crate::{XCapError, error::XCapResult};
 
@@ -193,6 +192,23 @@ impl ImplWindow {
             Ok(impl_window)
         }
     }
+    // 获取当前活动应用的名称
+    pub fn get_active_app_name() -> XCapResult<String> {
+        unsafe {
+            let workspace = NSWorkspace::sharedWorkspace();
+            let frontmost_app = workspace
+                .frontmostApplication()
+                .ok_or_else(|| XCapError::new("Failed to get frontmost application"))?;
+
+            // 直接从 NSRunningApplication 获取应用名称
+            let app_name = frontmost_app
+                .localizedName()
+                .map(|name| name.to_string())
+                .unwrap_or_else(|| "Unknown".to_string());
+
+            Ok(app_name)
+        }
+    }
 }
 
 impl ImplWindow {
@@ -343,22 +359,18 @@ impl ImplWindow {
     }
 
     pub fn is_focused(&self) -> XCapResult<bool> {
-        let pid_key = NSString::from_str("NSApplicationProcessIdentifier");
-
         unsafe {
             let workspace = NSWorkspace::sharedWorkspace();
 
-            // activeApplication is deprecated, but the alternative, frontmostApplication,
-            // returns the application in focus when the process started while activeApplication
-            // returns a `NSDictionary` of application currently in focus, in real-time
-            let active_app_dictionary = workspace.activeApplication();
+            // Use frontmostApplication instead of deprecated activeApplication
+            let frontmost_app = match workspace.frontmostApplication() {
+                Some(app) => app,
+                None => return Ok(false),
+            };
 
-            let active_app_pid = active_app_dictionary
-                .and_then(|dict| dict.valueForKey(&pid_key))
-                .and_then(|pid| pid.downcast::<NSNumber>().ok())
-                .map(|pid| pid.intValue() as u32);
+            let active_app_pid = frontmost_app.processIdentifier() as u32;
 
-            if active_app_pid == self.pid().ok() {
+            if active_app_pid == self.pid().ok().unwrap_or(0) {
                 return Ok(true);
             }
 

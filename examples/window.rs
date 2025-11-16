@@ -1,10 +1,14 @@
 use std::thread;
+use std::time::Instant;
 use xcap::Window;
 
 fn main() {
     thread::sleep(std::time::Duration::from_secs(3));
 
+    let start = Instant::now();
     let windows = Window::all().unwrap();
+    let elapsed = start.elapsed();
+    println!("Window::all() 耗时: {:?}", elapsed);
 
     for window in windows.clone() {
         println!(

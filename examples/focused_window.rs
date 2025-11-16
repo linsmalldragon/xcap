@@ -4,10 +4,18 @@ use xcap::Window;
 fn main() {
     thread::sleep(std::time::Duration::from_secs(3));
 
-    let windows = Window::all().unwrap();
+    //打印当前活动窗口的 app 名称
+    let start = std::time::Instant::now();
+    let app_name = Window::get_active_app_name().unwrap();
+    let elapsed = start.elapsed();
+    println!(
+        "当前活动窗口的 app 名称: {:?}, 耗时: {:?}",
+        app_name,
+        elapsed
+    );
 
-    loop {
-        windows.iter().filter(|w| w.is_focused().unwrap()).for_each(|focused| {
+    let windows = Window::all().unwrap();
+    windows.iter().filter(|w| w.is_focused().unwrap()).for_each(|focused| {
             println!(
                 "Focused Window:\n id: {}\n title: {}\n app_name: {}\n monitor: {:?}\n position: {:?}\n size {:?}\n state {:?}\n",
                 focused.id().unwrap(),
@@ -19,7 +27,4 @@ fn main() {
                 (focused.is_minimized().unwrap(), focused.is_maximized().unwrap(), focused.is_focused().unwrap())
             );
         });
-
-        thread::sleep(std::time::Duration::from_secs(1));
-    }
 }

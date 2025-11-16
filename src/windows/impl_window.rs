@@ -26,7 +26,7 @@ use windows::{
     core::{BOOL, HSTRING, PCWSTR},
 };
 
-use crate::error::XCapResult;
+use crate::error::{XCapError, XCapResult};
 
 use super::{
     capture::capture_window,
@@ -338,6 +338,23 @@ impl ImplWindow {
         }
 
         Ok(impl_windows)
+    }
+
+    // 获取当前活动应用的名称
+    pub fn get_active_app_name() -> XCapResult<String> {
+        unsafe {
+            let foreground_window = GetForegroundWindow();
+
+            if foreground_window.0 == 0 {
+                return Err(XCapError::new("Failed to get foreground window"));
+            }
+
+            let pid = get_window_pid(foreground_window);
+            let app_name = get_app_name(pid)
+                .unwrap_or_else(|_| "Unknown".to_string());
+
+            Ok(app_name)
+        }
     }
 }
 

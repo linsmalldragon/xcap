@@ -164,6 +164,19 @@ impl ImplWindow {
 
         Ok(impl_windows)
     }
+
+    // 获取当前活动应用的名称
+    pub fn get_active_app_name() -> XCapResult<String> {
+        let active_window_id = get_active_window_id()?;
+        let active_window = Window::from_resource_id(active_window_id);
+        let impl_window = ImplWindow::new(active_window);
+
+        let app_name = impl_window
+            .app_name()
+            .unwrap_or_else(|_| "Unknown".to_string());
+
+        Ok(app_name)
+    }
 }
 
 impl ImplWindow {

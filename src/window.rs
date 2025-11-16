@@ -23,6 +23,9 @@ impl Window {
 
         Ok(windows)
     }
+    pub fn get_active_app_name() -> XCapResult<String> {
+        ImplWindow::get_active_app_name()
+    }
 }
 
 impl Window {
