@@ -24,7 +24,21 @@ impl Window {
         Ok(windows)
     }
     pub fn get_active_app_name() -> XCapResult<String> {
-        ImplWindow::get_active_app_name()
+        let (name, _, _) = ImplWindow::get_active_info()?;
+        Ok(name)
+    }
+
+    /// Get the current active application information
+    ///
+    /// Returns: (app_name, process_id, display_serial_number)
+    ///
+    /// This is a high-performance implementation that:
+    /// - Directly gets the frontmost application's information
+    /// - Returns the application name, process ID, and display serial number
+    ///
+    /// Note: If the display doesn't support serial number, "Unknown" will be returned as fallback
+    pub fn get_active_info() -> XCapResult<(String, i32, String)> {
+        ImplWindow::get_active_info()
     }
 }
 

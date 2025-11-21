@@ -356,6 +356,31 @@ impl ImplWindow {
             Ok(app_name)
         }
     }
+
+    /// 获取当前活动应用的信息
+    ///
+    /// 返回：(应用名称, 进程 ID, 显示序列号)
+    pub fn get_active_info() -> XCapResult<(String, i32, String)> {
+        unsafe {
+            let foreground_window = GetForegroundWindow();
+
+            if foreground_window.0 == 0 {
+                return Err(XCapError::new("Failed to get foreground window"));
+            }
+
+            let pid = get_window_pid(foreground_window);
+            let app_name = get_app_name(pid)
+                .unwrap_or_else(|_| "Unknown".to_string());
+
+            let impl_window = ImplWindow::new(foreground_window);
+            let display_serial = impl_window
+                .current_monitor()
+                .and_then(|monitor| monitor.serial_number())
+                .unwrap_or_else(|_| "Unknown".to_string());
+
+            Ok((app_name, pid as i32, display_serial))
+        }
+    }
 }
 
 impl ImplWindow {

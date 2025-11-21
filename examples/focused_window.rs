@@ -10,8 +10,16 @@ fn main() {
     let elapsed = start.elapsed();
     println!(
         "当前活动窗口的 app 名称: {:?}, 耗时: {:?}",
-        app_name,
-        elapsed
+        app_name, elapsed
+    );
+
+    // 打印当前活动窗口的 app 名称和显示器序列号（高性能版本）
+    let start = std::time::Instant::now();
+    let (app_name, pid, display_serial) = Window::get_active_info().unwrap();
+    let elapsed = start.elapsed();
+    println!(
+        "当前活动窗口的 app 名称: {:?}, pid: {:?}, 显示器序列号: {}, 耗时: {:?}",
+        app_name, pid, display_serial, elapsed
     );
 
     let windows = Window::all().unwrap();
