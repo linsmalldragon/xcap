@@ -181,7 +181,7 @@ impl ImplWindow {
     /// 获取当前活动应用的信息
     ///
     /// 返回：(应用名称, 进程 ID, 显示序列号)
-    pub fn get_active_info() -> XCapResult<(String, i32, String)> {
+    pub async fn get_active_info() -> XCapResult<(String, i32, String)> {
         let active_window_id = get_active_window_id()?;
         let active_window = Window::from_resource_id(active_window_id);
         let impl_window = ImplWindow::new(active_window);

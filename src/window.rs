@@ -23,17 +23,11 @@ impl Window {
 
         Ok(windows)
     }
-    /// Get the current active application information
+    /// 获取当前活动应用的信息
     ///
-    /// Returns: (app_name, process_id, display_serial_number)
-    ///
-    /// This is a high-performance implementation that:
-    /// - Directly gets the frontmost application's information
-    /// - Returns the application name, process ID, and display serial number
-    ///
-    /// Note: If the display doesn't support serial number, "Unknown" will be returned as fallback
-    pub fn get_active_info() -> XCapResult<(String, i32, String)> {
-        ImplWindow::get_active_info()
+    /// 返回：(应用名称, 进程 ID, 显示序列号)
+    pub async fn get_active_info() -> XCapResult<(String, i32, String)> {
+        ImplWindow::get_active_info().await
     }
 }
 

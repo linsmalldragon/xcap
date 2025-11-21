@@ -1,8 +1,10 @@
 use std::{
     ffi::c_void,
     ptr::NonNull,
-    sync::{Arc, OnceLock, RwLock, mpsc},
+    sync::Arc,
 };
+
+use tokio::sync::{oneshot, Mutex, RwLock};
 
 use block2::RcBlock;
 use dispatch2::DispatchQueue;
@@ -23,7 +25,8 @@ use crate::{XCapError, error::XCapResult};
 
 use super::{capture::capture, impl_monitor::ImplMonitor};
 
-static ACTIVE_APP_TRACKER: OnceLock<Arc<ActiveAppTracker>> = OnceLock::new();
+static ACTIVE_APP_TRACKER: Mutex<Option<Arc<ActiveAppTracker>>> = Mutex::const_new(None);
+static ACTIVE_APP_TRACKER_INIT_LOCK: Mutex<()> = Mutex::const_new(());
 
 #[derive(Debug, Clone)]
 pub(crate) struct ImplWindow {
@@ -52,7 +55,7 @@ struct ActiveAppInfo {
 struct ActiveAppTracker {
     /// 当前活动应用的信息，使用 Arc<RwLock<>> 包装以支持多线程读取
     /// - Arc: 允许多个线程共享同一个信息的引用
-    /// - RwLock: 允许多个线程同时读取，但写入时需要独占锁
+    /// - RwLock: 允许多个线程同时读取，但写入时需要独占锁（使用 tokio 异步锁）
     current_info: Arc<RwLock<ActiveAppInfo>>,
     /// 通知观察者的令牌，用于在对象销毁时自动移除观察者
     /// 使用下划线前缀表示这是一个仅用于保持生命周期的字段
@@ -73,32 +76,37 @@ unsafe impl Sync for ActiveAppTracker {}
 /// 这个函数实现了线程安全的单例模式：
 /// 1. 首先检查全局静态变量 ACTIVE_APP_TRACKER 是否已经初始化
 /// 2. 如果已初始化，直接返回现有的 tracker
-/// 3. 如果未初始化，调用 init_active_app_tracker() 进行初始化
-/// 4. 尝试将新创建的 tracker 设置到全局变量中
-/// 5. 如果设置失败（说明其他线程已经先设置了），返回已存在的 tracker
+/// 3. 如果未初始化，获取初始化锁并调用 init_active_app_tracker() 进行初始化
+/// 4. 将新创建的 tracker 设置到全局变量中
+/// 5. 如果其他线程已经先设置了，返回已存在的 tracker
 ///
 /// 这样可以确保整个程序运行期间只有一个 ActiveAppTracker 实例，
 /// 避免重复注册通知观察者。
-fn ensure_active_app_tracker() -> XCapResult<Arc<ActiveAppTracker>> {
-    // 尝试获取已存在的 tracker（如果已经初始化过）
-    if let Some(tracker) = ACTIVE_APP_TRACKER.get() {
-        return Ok(tracker.clone());
-    }
-
-    // 如果不存在，则初始化一个新的 tracker
-    let tracker = init_active_app_tracker()?;
-
-    // 尝试将新创建的 tracker 设置到全局变量中
-    // 如果设置失败（is_err），说明其他线程已经先设置了
-    if ACTIVE_APP_TRACKER.set(tracker.clone()).is_err() {
-        // 返回其他线程已经设置好的 tracker
-        if let Some(existing) = ACTIVE_APP_TRACKER.get() {
-            return Ok(existing.clone());
+async fn ensure_active_app_tracker() -> XCapResult<Arc<ActiveAppTracker>> {
+    // 快速路径：检查是否已经初始化
+    {
+        let tracker_guard = ACTIVE_APP_TRACKER.lock().await;
+        if let Some(tracker) = tracker_guard.as_ref() {
+            return Ok(tracker.clone());
         }
     }
 
-    // 设置成功，返回新创建的 tracker
-    Ok(tracker)
+    // 获取初始化锁，确保只有一个线程进行初始化
+    let _init_guard = ACTIVE_APP_TRACKER_INIT_LOCK.lock().await;
+
+    // 双重检查：在获取锁后再次检查是否已经初始化
+    {
+        let mut tracker_guard = ACTIVE_APP_TRACKER.lock().await;
+        if let Some(tracker) = tracker_guard.as_ref() {
+            return Ok(tracker.clone());
+        }
+
+        // 初始化 tracker
+        let tracker = init_active_app_tracker().await?;
+        let tracker_clone = tracker.clone();
+        *tracker_guard = Some(tracker);
+        Ok(tracker_clone)
+    }
 }
 
 /// 初始化活动应用跟踪器
@@ -109,8 +117,8 @@ fn ensure_active_app_tracker() -> XCapResult<Arc<ActiveAppTracker>> {
 /// 1. 如果当前已经在主线程上：直接在主线程上创建 tracker
 /// 2. 如果当前不在主线程上：通过 DispatchQueue 切换到主线程创建 tracker
 ///
-/// 使用 mpsc::channel 来同步等待主线程上的初始化完成。
-fn init_active_app_tracker() -> XCapResult<Arc<ActiveAppTracker>> {
+/// 使用 tokio::sync::oneshot::channel 来异步等待主线程上的初始化完成。
+async fn init_active_app_tracker() -> XCapResult<Arc<ActiveAppTracker>> {
     // 检查当前是否在主线程上
     if MainThreadMarker::new().is_some() {
         // 已经在主线程上，直接创建 tracker
@@ -118,8 +126,8 @@ fn init_active_app_tracker() -> XCapResult<Arc<ActiveAppTracker>> {
     }
 
     // 不在主线程上，需要切换到主线程
-    // 创建一个通道用于接收主线程上的初始化结果
-    let (tx, rx) = mpsc::channel();
+    // 创建一个一次性通道用于接收主线程上的初始化结果
+    let (tx, rx) = oneshot::channel();
 
     // 在主线程上异步执行初始化任务
     DispatchQueue::main().exec_async(move || {
@@ -129,11 +137,11 @@ fn init_active_app_tracker() -> XCapResult<Arc<ActiveAppTracker>> {
         let _ = tx.send(tracker);
     });
 
-    // 阻塞等待主线程完成初始化并返回结果
-    // 使用 ?? 是因为 rx.recv() 返回 Result<Result<Arc<ActiveAppTracker>, XCapError>, RecvError>
+    // 异步等待主线程完成初始化并返回结果
+    // 使用 ?? 是因为 rx.await 返回 Result<Result<Arc<ActiveAppTracker>, XCapError>, RecvError>
     // 第一个 ? 处理通道接收错误，第二个 ? 处理 tracker 创建错误
     let tracker = rx
-        .recv()
+        .await
         .map_err(|_| XCapError::new("Failed to initialize active app tracker"))??;
 
     Ok(tracker)
@@ -186,11 +194,20 @@ impl ActiveAppTracker {
                     .unwrap_or_else(|_| "Unknown".to_string());
 
                 // 尝试获取写锁并更新应用信息
-                // 如果获取锁失败（比如其他线程正在读取），则忽略本次更新
-                if let Ok(mut guard) = shared_state.write() {
+                // 由于这是在 macOS 通知回调中执行的同步代码，我们首先尝试 try_write
+                // 如果失败且我们在 tokio 运行时上下文中，则使用 block_on 来执行异步写操作
+                if let Ok(mut guard) = shared_state.try_write() {
                     guard.name = name;
                     guard.pid = pid;
                     guard.display_serial = display_serial;
+                } else if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                    // 如果在 tokio 运行时上下文中，使用 block_on 来执行异步写操作
+                    let _ = handle.block_on(async {
+                        let mut guard = shared_state.write().await;
+                        guard.name = name;
+                        guard.pid = pid;
+                        guard.display_serial = display_serial;
+                    });
                 }
             }
         });
@@ -236,18 +253,14 @@ impl ActiveAppTracker {
     /// 读取当前活动应用的信息
     ///
     /// 这个函数是线程安全的，可以在任何线程上调用。
-    /// 它从共享的 RwLock 中读取应用信息（名称、pid、显示序列号），如果读取锁被污染（poisoned），
-    /// 说明之前有线程在持有写锁时发生了 panic，此时返回错误。
+    /// 它从共享的 RwLock 中读取应用信息（名称、pid、显示序列号）。
     ///
     /// 返回：(应用名称, 进程 ID, 显示序列号)
-    fn read_active_info(&self) -> XCapResult<(String, i32, String)> {
+    async fn read_active_info(&self) -> XCapResult<(String, i32, String)> {
         // 尝试获取读锁
-        self.current_info
-            .read()
-            // 如果成功，克隆信息内容（因为 guard 会在离开作用域时释放锁）
-            .map(|guard| (guard.name.clone(), guard.pid, guard.display_serial.clone()))
-            // 如果获取锁失败（锁被污染），返回错误
-            .map_err(|_| XCapError::new("Active app tracker state poisoned"))
+        let guard = self.current_info.read().await;
+        // 克隆信息内容（因为 guard 会在离开作用域时释放锁）
+        Ok((guard.name.clone(), guard.pid, guard.display_serial.clone()))
     }
 }
 
@@ -425,9 +438,9 @@ impl ImplWindow {
     /// 获取当前活动应用的信息
     ///
     /// 返回：(应用名称, 进程 ID, 显示序列号)
-    pub fn get_active_info() -> XCapResult<(String, i32, String)> {
-        let tracker = ensure_active_app_tracker()?;
-        tracker.read_active_info()
+    pub async fn get_active_info() -> XCapResult<(String, i32, String)> {
+        let tracker = ensure_active_app_tracker().await?;
+        tracker.read_active_info().await
     }
 
     /// 根据进程 ID 获取该进程窗口所在显示器的序列号

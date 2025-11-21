@@ -36,6 +36,7 @@ objc2-core-media = "0.3.2"
 objc2-core-video = "0.3.2"
 objc2-screen-capture-kit = { version = "0.3.2", features = ["block2"] }
 block2 = "0.6"
+tokio = { version = "1", features = ["rt", "sync"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 widestring = "1.2"

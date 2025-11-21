@@ -1,12 +1,13 @@
 use std::thread;
 use xcap::Window;
 
-fn main() {
+#[tokio::main]
+async fn main() {
     thread::sleep(std::time::Duration::from_secs(3));
 
     //打印当前活动窗口的 app 名称
     let start = std::time::Instant::now();
-    let app_name = Window::get_active_info().unwrap().0;
+    let app_name = Window::get_active_info().await.unwrap().0;
     let elapsed = start.elapsed();
     println!(
         "当前活动窗口的 app 名称: {:?}, 耗时: {:?}",
@@ -15,7 +16,7 @@ fn main() {
 
     // 打印当前活动窗口的 app 名称和显示器序列号（高性能版本）
     let start = std::time::Instant::now();
-    let (app_name, pid, display_serial) = Window::get_active_info().unwrap();
+    let (app_name, pid, display_serial) = Window::get_active_info().await.unwrap();
     let elapsed = start.elapsed();
     println!(
         "当前活动窗口的 app 名称: {:?}, pid: {:?}, 显示器序列号: {}, 耗时: {:?}",

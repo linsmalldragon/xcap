@@ -1,41 +1,56 @@
-use std::thread;
+use std::time::Duration;
+
+use objc2_foundation::{NSDate, NSRunLoop};
+use tokio::time;
 use xcap::Window;
 
-fn main() {
-    println!("等待 3 秒，请切换到你想要检测的应用窗口...");
-    thread::sleep(std::time::Duration::from_secs(3));
+fn run_main_run_loop_for(duration: Duration) {
+    let run_loop = NSRunLoop::currentRunLoop();
+    let target_date = NSDate::dateWithTimeIntervalSinceNow(duration.as_secs_f64());
+    run_loop.runUntilDate(&target_date);
+}
 
-    // 使用高性能 API 获取当前活动应用名称和显示器序列号
-    let start = std::time::Instant::now();
-    match Window::get_active_info() {
-        Ok((app_name, pid, display_serial)) => {
-            let elapsed = start.elapsed();
-            println!("\n当前活动应用信息:");
-            println!("  应用名称: {}", app_name);
-            println!("  进程 ID: {}", pid);
-            println!("  显示器序列号: {}", display_serial);
-            println!("  获取耗时: {:?}", elapsed);
+#[tokio::main(flavor = "current_thread")]
+async fn main() {
+    println!("等待主线程 RunLoop 运行，请切换到你想要检测的应用窗口...");
+    run_main_run_loop_for(Duration::from_secs(3));
+
+    // 在主线程中连续调用以测试性能
+    println!("\n主线程连续调用 10 次以测试性能:");
+    tokio::spawn(async move {
+        let mut total_elapsed = std::time::Duration::ZERO;
+        let mut success = 0;
+
+        for attempt in 1..=10 {
+            let start = std::time::Instant::now();
+            match Window::get_active_info().await {
+                Ok((app_name, pid, display_serial)) => {
+                    let elapsed = start.elapsed();
+                    total_elapsed += elapsed;
+                    success += 1;
+                    println!(
+                        "  tokio 线程第 {} 次: app={}, display_serial={}, pid={}, 耗时={:?}",
+                        attempt, app_name, display_serial, pid, elapsed
+                    );
+                }
+                Err(e) => {
+                    eprintln!("  tokio 线程第 {} 次获取活动应用信息失败: {:?}", attempt, e);
+                }
+            }
+            time::sleep(Duration::from_secs(1)).await;
         }
-        Err(e) => {
-            eprintln!("获取活动应用信息失败: {:?}", e);
+        if success > 0 {
+            println!("\n平均耗时: {:?}", total_elapsed / success as u32);
+        } else {
+            println!("\n全部失败，无法计算平均耗时");
         }
+    });
+
+    // 保持主线程运行，让 tokio 任务能够执行
+    let wait_interval = Duration::from_millis(100);
+    loop {
+        run_main_run_loop_for(wait_interval);
+        // 给 tokio 运行时一些时间处理任务
+        tokio::task::yield_now().await;
     }
-
-    // 多次调用以展示性能稳定性
-    println!("\n连续调用 10 次以测试性能:");
-    let mut total_time = std::time::Duration::ZERO;
-
-    for i in 1..=10 {
-        let start = std::time::Instant::now();
-        if let Ok((app_name, pid, display_serial)) = Window::get_active_info() {
-            let elapsed = start.elapsed();
-            total_time += elapsed;
-            println!(
-                "  第 {} 次: app={}, display_serial={}, 耗时={:?}",
-                i, app_name, display_serial, elapsed
-            );
-        }
-    }
-
-    println!("\n平均耗时: {:?}", total_time / 10);
 }
