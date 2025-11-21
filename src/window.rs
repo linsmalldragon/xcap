@@ -23,11 +23,6 @@ impl Window {
 
         Ok(windows)
     }
-    pub fn get_active_app_name() -> XCapResult<String> {
-        let (name, _, _) = ImplWindow::get_active_info()?;
-        Ok(name)
-    }
-
     /// Get the current active application information
     ///
     /// Returns: (app_name, process_id, display_serial_number)

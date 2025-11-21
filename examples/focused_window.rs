@@ -6,7 +6,7 @@ fn main() {
 
     //打印当前活动窗口的 app 名称
     let start = std::time::Instant::now();
-    let app_name = Window::get_active_app_name().unwrap();
+    let app_name = Window::get_active_info().unwrap().0;
     let elapsed = start.elapsed();
     println!(
         "当前活动窗口的 app 名称: {:?}, 耗时: {:?}",
