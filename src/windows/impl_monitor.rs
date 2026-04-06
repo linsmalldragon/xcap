@@ -222,13 +222,13 @@ impl ImplMonitor {
 
 impl ImplMonitor {
     pub fn id(&self) -> XCapResult<u32> {
-        Ok(self.h_monitor.0 as u32)
+        Ok(self.h_monitor.0 as usize as u32)
     }
 
     pub fn name(&self) -> XCapResult<String> {
         let monitor_info_ex_w = get_monitor_info_ex_w(self.h_monitor)?;
 
-        let config_default_name = format!("Unknown Monitor {}", self.h_monitor.0 as u32);
+        let config_default_name = format!("Unknown Monitor {}", self.h_monitor.0 as usize as u32);
         let config = match get_monitor_config(monitor_info_ex_w) {
             Ok(config) => config,
             Err(_) => return Ok(config_default_name),

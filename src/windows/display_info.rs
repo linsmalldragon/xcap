@@ -10,16 +10,19 @@
 //! - ✅ 支持多显示器环境
 
 use windows::{
-    core::{HSTRING, VARIANT},
+    core::{BSTR, HSTRING},
     Win32::{
         Graphics::Gdi::HMONITOR,
         System::{
             Com::{
-                CoCreateInstance, CoInitializeEx, CoUninitialize, SafeArrayGetElement,
-                SafeArrayGetLBound, SafeArrayGetUBound, CLSCTX_INPROC_SERVER,
-                COINIT_MULTITHREADED,
+                CoCreateInstance, CoInitializeEx, CoUninitialize, SAFEARRAY,
+                CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
             },
-            Variant::{VT_ARRAY, VT_UI1},
+            Ole::{
+                SafeArrayAccessData, SafeArrayGetLBound, SafeArrayGetUBound,
+                SafeArrayUnaccessData,
+            },
+            Variant::{VARIANT, VT_ARRAY, VT_UI1},
             Wmi::{
                 IWbemClassObject, IWbemLocator, IWbemServices, WbemLocator,
                 WBEM_FLAG_FORWARD_ONLY, WBEM_FLAG_RETURN_IMMEDIATELY, WBEM_INFINITE,
@@ -46,13 +49,13 @@ pub fn get_display_uuid_from_wmi(_h_monitor: HMONITOR) -> XCapResult<String> {
         let locator: IWbemLocator = CoCreateInstance(&WbemLocator, None, CLSCTX_INPROC_SERVER)?;
 
         // 3. 连接到 WMI namespace
-        let namespace = HSTRING::from("root\\wmi");
+        let namespace = BSTR::from("root\\wmi");
         let services: IWbemServices =
-            locator.ConnectServer(&namespace, None, None, None, 0, None, None)?;
+            locator.ConnectServer(&namespace, &BSTR::default(), &BSTR::default(), &BSTR::default(), 0, &BSTR::default(), None)?;
 
         // 4. 查询 WmiMonitorID
-        let query = HSTRING::from("SELECT * FROM WmiMonitorID");
-        let query_language = HSTRING::from("WQL");
+        let query = BSTR::from("SELECT * FROM WmiMonitorID");
+        let query_language = BSTR::from("WQL");
 
         let enumerator = services.ExecQuery(
             &query_language,
@@ -100,13 +103,13 @@ pub fn get_display_serial_from_wmi(_h_monitor: HMONITOR) -> XCapResult<String> {
         let locator: IWbemLocator = CoCreateInstance(&WbemLocator, None, CLSCTX_INPROC_SERVER)?;
 
         // 3. 连接到 WMI namespace
-        let namespace = HSTRING::from("root\\wmi");
+        let namespace = BSTR::from("root\\wmi");
         let services: IWbemServices =
-            locator.ConnectServer(&namespace, None, None, None, 0, None, None)?;
+            locator.ConnectServer(&namespace, &BSTR::default(), &BSTR::default(), &BSTR::default(), 0, &BSTR::default(), None)?;
 
         // 4. 查询 WmiMonitorID
-        let query = HSTRING::from("SELECT * FROM WmiMonitorID");
-        let query_language = HSTRING::from("WQL");
+        let query = BSTR::from("SELECT * FROM WmiMonitorID");
+        let query_language = BSTR::from("WQL");
 
         let enumerator = services.ExecQuery(
             &query_language,
@@ -148,55 +151,41 @@ unsafe fn get_string_property(
 
     obj.Get(&prop_name, 0, &mut value, None, None)?;
 
-    // 处理数组类型（WMI 返回的是 byte 数组）
-    if let VARIANT {
-        Anonymous:
-            windows::core::VARIANT_0 {
-                Anonymous:
-                    windows::core::VARIANT_0_0 {
-                        vt,
-                        Anonymous: windows::core::VARIANT_0_0_0 { parray },
-                        ..
-                    },
-            },
-    } = value
-    {
-        // 检查是否为 VT_ARRAY | VT_UI1
-        if vt == (VT_ARRAY | VT_UI1).0 as u16 {
-            if let Some(safe_array) = parray.as_ref() {
-                let mut lower_bound = 0i32;
-                let mut upper_bound = 0i32;
+    // In windows 0.62, VARIANT internal structs are not public.
+    // Access the raw memory layout: vt is at offset 0 (u16), parray is at offset 8 (pointer).
+    let variant_ptr = &value as *const VARIANT as *const u8;
+    let vt = *(variant_ptr as *const u16);
+    let expected_vt = (VT_ARRAY | VT_UI1).0 as u16;
 
-                SafeArrayGetLBound(*safe_array, 1, &mut lower_bound)?;
-                SafeArrayGetUBound(*safe_array, 1, &mut upper_bound)?;
-
-                let count = (upper_bound - lower_bound + 1) as usize;
-                let mut bytes = vec![0u8; count];
-
-                for i in 0..count {
-                    let index = lower_bound + i as i32;
-                    let mut element = 0u8;
-                    SafeArrayGetElement(
-                        *safe_array,
-                        &index as *const i32,
-                        &mut element as *mut u8 as *mut _,
-                    )?;
-                    bytes[i] = element;
-                }
-
-                // 过滤掉 0 字节并转换为字符串
-                let result: String = bytes
-                    .into_iter()
-                    .filter(|&b| b != 0)
-                    .map(|b| b as char)
-                    .collect();
-
-                return Ok(result);
-            }
-        }
+    if vt != expected_vt {
+        return Ok(String::new());
     }
 
-    Ok(String::new())
+    // parray is at offset 8 in the VARIANT union
+    let parray = *(variant_ptr.add(8) as *const *mut SAFEARRAY);
+    if parray.is_null() {
+        return Ok(String::new());
+    }
+
+    let lower_bound = SafeArrayGetLBound(parray, 1)?;
+    let upper_bound = SafeArrayGetUBound(parray, 1)?;
+
+    let count = (upper_bound - lower_bound + 1) as usize;
+
+    // Use SafeArrayAccessData for efficient direct memory access
+    let mut data_ptr: *mut std::ffi::c_void = std::ptr::null_mut();
+    SafeArrayAccessData(parray, &mut data_ptr)?;
+
+    let bytes = std::slice::from_raw_parts(data_ptr as *const u8, count);
+    let result: String = bytes
+        .iter()
+        .filter(|&&b| b != 0)
+        .map(|&b| b as char)
+        .collect();
+
+    SafeArrayUnaccessData(parray)?;
+
+    Ok(result)
 }
 
 /// 获取显示器 UUID（多种方法）

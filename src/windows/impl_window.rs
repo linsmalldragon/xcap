@@ -345,7 +345,7 @@ impl ImplWindow {
         unsafe {
             let foreground_window = GetForegroundWindow();
 
-            if foreground_window.0 == 0 {
+            if foreground_window.0.is_null() {
                 return Err(XCapError::new("Failed to get foreground window"));
             }
 
@@ -364,7 +364,7 @@ impl ImplWindow {
         unsafe {
             let foreground_window = GetForegroundWindow();
 
-            if foreground_window.0 == 0 {
+            if foreground_window.0.is_null() {
                 return Err(XCapError::new("Failed to get foreground window"));
             }
 
@@ -385,7 +385,7 @@ impl ImplWindow {
 
 impl ImplWindow {
     pub fn id(&self) -> XCapResult<u32> {
-        Ok(self.hwnd.0 as u32)
+        Ok(self.hwnd.0 as usize as u32)
     }
 
     pub fn pid(&self) -> XCapResult<u32> {
