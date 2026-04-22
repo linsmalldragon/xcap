@@ -1,6 +1,6 @@
 use image::RgbaImage;
 use xcb::{
-    Xid,
+    Xid, XidNew,
     x::{
         ATOM_ATOM, ATOM_CARDINAL, ATOM_NONE, ATOM_STRING, ATOM_WM_CLASS, ATOM_WM_NAME, Atom,
         Drawable, GetGeometry, GetProperty, GetPropertyReply, QueryPointer, TranslateCoordinates,
@@ -168,7 +168,7 @@ impl ImplWindow {
     // 获取当前活动应用的名称
     pub fn get_active_app_name() -> XCapResult<String> {
         let active_window_id = get_active_window_id()?;
-        let active_window = Window::from_resource_id(active_window_id);
+        let active_window = unsafe { Window::new(active_window_id) };
         let impl_window = ImplWindow::new(active_window);
 
         let app_name = impl_window
@@ -183,7 +183,7 @@ impl ImplWindow {
     /// 返回：(应用名称, 进程 ID, 显示序列号)
     pub async fn get_active_info() -> XCapResult<(String, i32, String)> {
         let active_window_id = get_active_window_id()?;
-        let active_window = Window::from_resource_id(active_window_id);
+        let active_window = unsafe { Window::new(active_window_id) };
         let impl_window = ImplWindow::new(active_window);
 
         let app_name = impl_window

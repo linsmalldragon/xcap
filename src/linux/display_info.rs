@@ -12,7 +12,7 @@
 use std::ffi::CStr;
 use xcb::{
     randr::{GetOutputInfo, GetOutputProperty, Output},
-    x::ATOM_INTEGER,
+    x::{ATOM_INTEGER, CURRENT_TIME},
     Xid,
 };
 
@@ -70,7 +70,7 @@ fn get_edid_data(output: Output) -> XCapResult<Vec<u8>> {
     let (conn, _) = get_xcb_connection_and_index()?;
 
     // 获取 EDID 属性的 Atom
-    let edid_atom = get_atom(&conn, "EDID")?;
+    let edid_atom = get_atom("EDID")?;
 
     // 请求 EDID 属性
     let cookie = conn.send_request(&GetOutputProperty {
@@ -85,8 +85,8 @@ fn get_edid_data(output: Output) -> XCapResult<Vec<u8>> {
 
     let reply = conn.wait_for_reply(cookie)?;
 
-    if reply.format() == 8 && reply.num_items() >= 128 {
-        Ok(reply.data().to_vec())
+    if reply.format() == 8 && reply.data::<u8>().len() >= 128 {
+        Ok(reply.data::<u8>().to_vec())
     } else {
         Err(XCapError::new("Failed to get valid EDID data"))
     }
@@ -114,13 +114,9 @@ pub fn get_display_uuid(output: Output) -> XCapResult<String> {
     // 注意：Output ID 在 X server 重启后可能会变化
     let (conn, _) = get_xcb_connection_and_index()?;
 
-    // 尝试获取输出名称作为更稳定的标识
-    let screen_buf = super::utils::get_current_screen_buf()?;
-    let screen_res = super::utils::get_monitor_info_buf()?;
-
     let output_info_cookie = conn.send_request(&GetOutputInfo {
         output,
-        config_timestamp: screen_res.config_timestamp(),
+        config_timestamp: CURRENT_TIME,
     });
 
     if let Ok(output_info_reply) = conn.wait_for_reply(output_info_cookie) {
