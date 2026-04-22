@@ -1,18 +1,18 @@
-use std::{collections::HashMap, env::temp_dir, fmt::Debug, fs, sync::Mutex};
+use std::{
+    env::temp_dir, fs,
+    sync::{Mutex, atomic::{AtomicBool, Ordering}},
+};
 
 use image::RgbaImage;
 use scopeguard::defer;
-use zbus::{
-    blocking::{Connection, Proxy},
-    zvariant::{DeserializeDict, Type, Value},
-};
+use zbus::blocking::{Connection, Proxy};
 
-use crate::{
-    error::XCapResult,
-    platform::utils::{get_zbus_portal_request, safe_uri_to_path, wait_zbus_response},
-};
+use crate::error::XCapResult;
 
+use super::screencast_capture::screencast_capture;
 use super::utils::{get_zbus_connection, png_to_rgba_image};
+
+static GNOME_SHELL_AVAILABLE: AtomicBool = AtomicBool::new(true);
 
 fn org_gnome_shell_screenshot(
     conn: &Connection,
@@ -45,48 +45,6 @@ fn org_gnome_shell_screenshot(
     proxy.call_method("ScreenshotArea", &(x, y, width, height, false, &filename))?;
 
     let rgba_image = png_to_rgba_image(&filename, 0, 0, width, height)?;
-
-    Ok(rgba_image)
-}
-
-#[derive(DeserializeDict, Type, Debug)]
-#[zvariant(signature = "dict")]
-pub struct ScreenshotResponse {
-    uri: String,
-}
-
-/// https://flatpak.github.io/xdg-desktop-portal/docs/doc-org.freedesktop.portal.Screenshot.html
-fn org_freedesktop_portal_screenshot(
-    conn: &Connection,
-    x: i32,
-    y: i32,
-    width: i32,
-    height: i32,
-) -> XCapResult<RgbaImage> {
-    let proxy = Proxy::new(
-        conn,
-        "org.freedesktop.portal.Desktop",
-        "/org/freedesktop/portal/desktop",
-        "org.freedesktop.portal.Screenshot",
-    )?;
-
-    let handle_token = rand::random::<u32>().to_string();
-    let portal_request = get_zbus_portal_request(conn, &handle_token)?;
-
-    let mut options: HashMap<&str, Value> = HashMap::new();
-    options.insert("handle_token", Value::from(&handle_token));
-    options.insert("modal", Value::from(true));
-    options.insert("interactive", Value::from(false));
-
-    // https://github.com/flatpak/xdg-desktop-portal/blob/main/data/org.freedesktop.portal.Screenshot.xml
-    proxy.call_method("Screenshot", &("", options))?;
-    let screenshot_response: ScreenshotResponse = wait_zbus_response(&portal_request)?;
-    let filename = safe_uri_to_path(&screenshot_response.uri)?;
-    defer!({
-        let _ = fs::remove_file(&filename);
-    });
-
-    let rgba_image = png_to_rgba_image(&filename, x, y, width, height)?;
 
     Ok(rgba_image)
 }
@@ -127,23 +85,29 @@ fn wlroots_screenshot(
 }
 
 pub fn wayland_capture(x: i32, y: i32, width: i32, height: i32) -> XCapResult<RgbaImage> {
-    let lock = DBUS_LOCK.lock();
+    // Try GNOME Shell Screenshot first (only if not already known to be unavailable)
+    if GNOME_SHELL_AVAILABLE.load(Ordering::Relaxed) {
+        let lock = DBUS_LOCK.lock();
+        let conn = get_zbus_connection()?;
+        match org_gnome_shell_screenshot(conn, x, y, width, height) {
+            Ok(img) => {
+                drop(lock);
+                return Ok(img);
+            }
+            Err(e) => {
+                GNOME_SHELL_AVAILABLE.store(false, Ordering::Relaxed);
+                log::info!("org.gnome.Shell.Screenshot unavailable ({e}), will use ScreenCast portal");
+                drop(lock);
+            }
+        }
+    }
 
-    let conn = get_zbus_connection()?;
-    let res = org_gnome_shell_screenshot(conn, x, y, width, height)
+    // Try ScreenCast portal (persistent session, only prompts once)
+    screencast_capture(x, y, width, height)
         .or_else(|e| {
-            log::debug!("org_gnome_shell_screenshot failed {e}");
-
-            org_freedesktop_portal_screenshot(conn, x, y, width, height)
-        })
-        .or_else(|e| {
-            log::debug!("org_freedesktop_portal_screenshot failed {e}");
+            log::debug!("ScreenCast capture failed: {e}, trying wlroots");
             wlroots_screenshot(x, y, width, height)
-        });
-
-    drop(lock);
-
-    res
+        })
 }
 #[test]
 fn screnshot_multithreaded() {

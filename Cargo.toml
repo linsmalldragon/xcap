@@ -9,9 +9,6 @@ homepage = "https://github.com/nashaofu/xcap"
 repository = "https://github.com/nashaofu/xcap.git"
 keywords = ["screen", "monitor", "window", "capture", "image"]
 
-[workspace]
-members = ["."]
-resolver = "2"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
