@@ -450,6 +450,9 @@ fn capture_with_screencapturekit(
                 stream_config.setHeight(height.max(1));
                 stream_config.setPixelFormat(kCVPixelFormatType_32BGRA);
                 stream_config.setQueueDepth(1);
+                // scale > 1.0 时输出尺寸可能大于物理像素，默认 scalesToFit=false
+                // 只会缩小不会放大，导致内容只占据部分画面
+                unsafe { stream_config.setScalesToFit(true) };
 
                 let stream = SCStream::initWithFilter_configuration_delegate(
                     SCStream::alloc(),
