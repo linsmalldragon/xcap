@@ -74,11 +74,21 @@ pub fn capture(
     window_id: CGWindowID,
     display_id: Option<CGDirectDisplayID>,
 ) -> XCapResult<RgbaImage> {
+    capture_with_scale(cg_rect, list_option, window_id, display_id, 1.0)
+}
+
+pub fn capture_with_scale(
+    cg_rect: CGRect,
+    list_option: CGWindowListOption,
+    window_id: CGWindowID,
+    display_id: Option<CGDirectDisplayID>,
+    scale: f32,
+) -> XCapResult<RgbaImage> {
     // 优先使用 ScreenCaptureKit（如果可用）
     // 深度优化：快速失败，如果 ScreenCaptureKit 超时或失败，立即回退
     if is_screencapturekit_available() {
         // 尝试使用 ScreenCaptureKit，但设置较短的超时以便快速回退
-        match capture_with_screencapturekit(cg_rect, list_option, window_id, display_id) {
+        match capture_with_screencapturekit(cg_rect, list_option, window_id, display_id, scale) {
             Ok(image) => return Ok(image),
             Err(_) => {
                 // ScreenCaptureKit 不可用或失败，快速回退到 CGWindowListCreateImage
@@ -87,6 +97,7 @@ pub fn capture(
         }
     }
     // 回退到传统的 CGWindowListCreateImage 方法（通常更快但已废弃）
+    // CGWindowListCreateImage 始终返回物理像素，无需 scale 参数
     capture_compatible::capture_with_cgwindowlist(cg_rect, list_option, window_id)
 }
 
@@ -336,6 +347,7 @@ fn capture_with_screencapturekit(
     _list_option: CGWindowListOption,
     _window_id: CGWindowID,
     display_id: Option<CGDirectDisplayID>,
+    scale: f32,
 ) -> XCapResult<RgbaImage> {
     unsafe {
         let total_start = Instant::now();
@@ -393,18 +405,19 @@ fn capture_with_screencapturekit(
         // 5. 创建流配置
         // 优化：使用 cg_rect 的尺寸，避免重复调用 CGDisplayBounds
         // 如果 cg_rect 尺寸为 0，说明需要获取完整显示器尺寸
+        // scale 参数用于控制捕获分辨率：1.0=逻辑分辨率，2.0=物理分辨率(Retina)
         let t6 = Instant::now();
         let (width, height) = if cg_rect.size.width > 0.0 && cg_rect.size.height > 0.0 {
             (
-                cg_rect.size.width.round() as usize,
-                cg_rect.size.height.round() as usize,
+                (cg_rect.size.width * scale as f64).round() as usize,
+                (cg_rect.size.height * scale as f64).round() as usize,
             )
         } else {
             // 只有在必要时才调用 CGDisplayBounds
             let bounds = CGDisplayBounds(target_display_id);
             (
-                bounds.size.width.round() as usize,
-                bounds.size.height.round() as usize,
+                (bounds.size.width * scale as f64).round() as usize,
+                (bounds.size.height * scale as f64).round() as usize,
             )
         };
         debug!("[性能] 6. 创建流配置: {:?}", t6.elapsed());

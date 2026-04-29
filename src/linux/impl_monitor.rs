@@ -378,6 +378,10 @@ impl ImplMonitor {
         capture_monitor(self)
     }
 
+    pub fn capture_image_with_scale(&self, _scale: f32) -> XCapResult<RgbaImage> {
+        self.capture_image()
+    }
+
     pub fn capture_region(&self, x: u32, y: u32, width: u32, height: u32) -> XCapResult<RgbaImage> {
         // Validate region bounds
         let monitor_x = self.x()?;

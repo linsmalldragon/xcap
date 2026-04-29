@@ -16,7 +16,7 @@ use crate::{
     video_recorder::Frame,
 };
 
-use super::{capture::capture, display_info, impl_video_recorder::ImplVideoRecorder};
+use super::{capture::capture, capture::capture_with_scale, display_info, impl_video_recorder::ImplVideoRecorder};
 
 #[derive(Debug, Clone)]
 pub(crate) struct ImplMonitor {
@@ -233,6 +233,12 @@ impl ImplMonitor {
 
         // 优化：直接传递 display_id，避免在 capture 函数中重复查找显示器
         capture(cg_rect, CGWindowListOption::OptionAll, 0, Some(self.cg_direct_display_id))
+    }
+
+    pub fn capture_image_with_scale(&self, scale: f32) -> XCapResult<RgbaImage> {
+        let cg_rect = unsafe { CGDisplayBounds(self.cg_direct_display_id) };
+
+        capture_with_scale(cg_rect, CGWindowListOption::OptionAll, 0, Some(self.cg_direct_display_id), scale)
     }
 
     pub fn capture_region(&self, x: u32, y: u32, width: u32, height: u32) -> XCapResult<RgbaImage> {

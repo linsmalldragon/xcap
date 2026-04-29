@@ -157,6 +157,14 @@ impl Monitor {
         self.impl_monitor.capture_image()
     }
 
+    /// Capture image of the monitor with a custom scale factor.
+    /// scale=1.0 captures at logical resolution (default behavior).
+    /// scale=2.0 captures at 2x resolution (physical pixels on Retina).
+    /// On Windows/Linux this parameter is ignored as they already capture at physical resolution.
+    pub fn capture_image_with_scale(&self, scale: f32) -> XCapResult<RgbaImage> {
+        self.impl_monitor.capture_image_with_scale(scale)
+    }
+
     pub fn capture_region(&self, x: u32, y: u32, width: u32, height: u32) -> XCapResult<RgbaImage> {
         self.impl_monitor.capture_region(x, y, width, height)
     }

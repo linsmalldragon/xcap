@@ -65,6 +65,10 @@ impl ImplMonitor {
         Err(XCapError::NotSupported)
     }
 
+    pub fn capture_image_with_scale(&self, _scale: f32) -> XCapResult<RgbaImage> {
+        Err(XCapError::NotSupported)
+    }
+
     pub fn capture_region(
         &self,
         _x: u32,
