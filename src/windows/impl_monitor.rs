@@ -267,6 +267,18 @@ impl ImplMonitor {
         Ok(dev_mode_w.dmPelsHeight)
     }
 
+    pub(crate) fn native_capture_dimensions(&self) -> XCapResult<(u32, u32)> {
+        let dev_mode_w = get_dev_mode_w(self.h_monitor)?;
+        let width = dev_mode_w.dmPelsWidth;
+        let height = dev_mode_w.dmPelsHeight;
+        if width == 0 || height == 0 {
+            return Err(XCapError::new(format!(
+                "current display mode returned invalid native capture dimensions {width}x{height}"
+            )));
+        }
+        Ok((width, height))
+    }
+
     pub fn rotation(&self) -> XCapResult<f32> {
         let dev_mode_w = get_dev_mode_w(self.h_monitor)?;
         let dm_display_orientation =

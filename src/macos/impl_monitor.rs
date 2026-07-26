@@ -34,17 +34,31 @@ pub(super) fn native_pixel_dimensions_for_display(
     let logical_width = bounds.size.width.max(1.0).round() as u32;
     let logical_height = bounds.size.height.max(1.0).round() as u32;
     let display_mode = CGDisplayCopyDisplayMode(display_id);
-    let mut pixel_width = CGDisplayMode::pixel_width(display_mode.as_deref()) as u32;
-    let mut pixel_height = CGDisplayMode::pixel_height(display_mode.as_deref()) as u32;
+    let pixel_width = CGDisplayMode::pixel_width(display_mode.as_deref()) as u32;
+    let pixel_height = CGDisplayMode::pixel_height(display_mode.as_deref()) as u32;
     if pixel_width == 0 || pixel_height == 0 {
         return Err(XCapError::new(format!(
             "CGDisplayMode returned invalid native pixel dimensions for display {display_id}"
         )));
     }
+    Ok(capture_oriented_pixel_dimensions(
+        logical_width,
+        logical_height,
+        pixel_width,
+        pixel_height,
+    ))
+}
+
+fn capture_oriented_pixel_dimensions(
+    logical_width: u32,
+    logical_height: u32,
+    mut pixel_width: u32,
+    mut pixel_height: u32,
+) -> (u32, u32) {
     if (logical_width >= logical_height) != (pixel_width >= pixel_height) {
         mem::swap(&mut pixel_width, &mut pixel_height);
     }
-    Ok((pixel_width, pixel_height))
+    (pixel_width, pixel_height)
 }
 
 fn get_display_friendly_name(display_id: CGDirectDisplayID) -> XCapResult<String> {
@@ -231,7 +245,7 @@ impl ImplMonitor {
         Ok(pixel_width as f32 / width as f32)
     }
 
-    pub(crate) fn native_pixel_dimensions(&self) -> XCapResult<(u32, u32)> {
+    pub(crate) fn native_capture_dimensions(&self) -> XCapResult<(u32, u32)> {
         native_pixel_dimensions_for_display(self.cg_direct_display_id)
     }
 
@@ -366,5 +380,30 @@ impl ImplMonitor {
     /// 某些显示器可能不提供序列号信息
     pub fn serial_number(&self) -> XCapResult<String> {
         display_info::get_display_serial_number(self.cg_direct_display_id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::capture_oriented_pixel_dimensions;
+
+    #[test]
+    fn retina_dimensions_are_native_pixels_not_scale_applied_twice() {
+        assert_eq!(
+            capture_oriented_pixel_dimensions(1728, 1117, 3456, 2234),
+            (3456, 2234)
+        );
+    }
+
+    #[test]
+    fn rotated_display_dimensions_follow_capture_orientation() {
+        assert_eq!(
+            capture_oriented_pixel_dimensions(1117, 1728, 3456, 2234),
+            (2234, 3456)
+        );
+        assert_eq!(
+            capture_oriented_pixel_dimensions(1728, 1117, 2234, 3456),
+            (3456, 2234)
+        );
     }
 }

@@ -51,6 +51,10 @@ impl ImplMonitor {
         Err(XCapError::NotSupported)
     }
 
+    pub(crate) fn native_capture_dimensions(&self) -> XCapResult<(u32, u32)> {
+        Err(XCapError::NotSupported)
+    }
+
     pub fn frequency(&self) -> XCapResult<f32> {
         Err(XCapError::NotSupported)
     }

@@ -92,6 +92,16 @@ impl Monitor {
     pub fn scale_factor(&self) -> XCapResult<f32> {
         self.impl_monitor.scale_factor()
     }
+    /// Native pixel dimensions produced by the platform's continuous
+    /// full-monitor capture backend.
+    ///
+    /// Unlike [`Monitor::width`] and [`Monitor::height`], these dimensions
+    /// never represent DPI-scaled logical coordinates. The returned
+    /// orientation matches frames delivered by [`Monitor::video_recorder`]:
+    /// portrait displays therefore return portrait dimensions.
+    pub fn native_capture_dimensions(&self) -> XCapResult<(u32, u32)> {
+        self.impl_monitor.native_capture_dimensions()
+    }
     /// The screen refresh rate.
     pub fn frequency(&self) -> XCapResult<f32> {
         self.impl_monitor.frequency()
@@ -181,7 +191,7 @@ impl Monitor {
     ) -> XCapResult<RgbaImage> {
         #[cfg(target_os = "macos")]
         {
-            if let Ok((native_width, native_height)) = self.impl_monitor.native_pixel_dimensions() {
+            if let Ok((native_width, native_height)) = self.native_capture_dimensions() {
                 let target_dimensions = output_size.output_dimensions(native_width, native_height);
                 let image = self
                     .impl_monitor
