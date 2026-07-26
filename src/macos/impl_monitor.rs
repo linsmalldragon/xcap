@@ -13,10 +13,13 @@ use objc2_foundation::{NSNumber, NSString};
 
 use crate::{
     error::{XCapError, XCapResult},
-    video_recorder::Frame,
+    video_recorder::{Frame, VideoRecorderConfig},
 };
 
-use super::{capture::capture, capture::capture_with_scale, display_info, impl_video_recorder::ImplVideoRecorder};
+use super::{
+    capture::capture, capture::capture_with_scale, display_info,
+    impl_video_recorder::ImplVideoRecorder,
+};
 
 #[derive(Debug, Clone)]
 pub(crate) struct ImplMonitor {
@@ -232,13 +235,24 @@ impl ImplMonitor {
         let cg_rect = unsafe { CGDisplayBounds(self.cg_direct_display_id) };
 
         // 优化：直接传递 display_id，避免在 capture 函数中重复查找显示器
-        capture(cg_rect, CGWindowListOption::OptionAll, 0, Some(self.cg_direct_display_id))
+        capture(
+            cg_rect,
+            CGWindowListOption::OptionAll,
+            0,
+            Some(self.cg_direct_display_id),
+        )
     }
 
     pub fn capture_image_with_scale(&self, scale: f32) -> XCapResult<RgbaImage> {
         let cg_rect = unsafe { CGDisplayBounds(self.cg_direct_display_id) };
 
-        capture_with_scale(cg_rect, CGWindowListOption::OptionAll, 0, Some(self.cg_direct_display_id), scale)
+        capture_with_scale(
+            cg_rect,
+            CGWindowListOption::OptionAll,
+            0,
+            Some(self.cg_direct_display_id),
+            scale,
+        )
     }
 
     pub fn capture_region(&self, x: u32, y: u32, width: u32, height: u32) -> XCapResult<RgbaImage> {
@@ -272,11 +286,33 @@ impl ImplMonitor {
         };
 
         // 优化：直接传递 display_id，避免在 capture 函数中重复查找显示器
-        capture(cg_rect, CGWindowListOption::OptionAll, 0, Some(self.cg_direct_display_id))
+        capture(
+            cg_rect,
+            CGWindowListOption::OptionAll,
+            0,
+            Some(self.cg_direct_display_id),
+        )
     }
 
     pub fn video_recorder(&self) -> XCapResult<(ImplVideoRecorder, Receiver<Frame>)> {
-        ImplVideoRecorder::new(self.cg_direct_display_id)
+        self.video_recorder_with_config(VideoRecorderConfig::default())
+    }
+
+    pub fn video_recorder_with_fps(
+        &self,
+        fps: f64,
+    ) -> XCapResult<(ImplVideoRecorder, Receiver<Frame>)> {
+        self.video_recorder_with_config(VideoRecorderConfig {
+            fps,
+            ..VideoRecorderConfig::default()
+        })
+    }
+
+    pub fn video_recorder_with_config(
+        &self,
+        config: VideoRecorderConfig,
+    ) -> XCapResult<(ImplVideoRecorder, Receiver<Frame>)> {
+        ImplVideoRecorder::new(self.cg_direct_display_id, config)
     }
 
     /// 获取显示器的 UUID（持久化唯一标识符）

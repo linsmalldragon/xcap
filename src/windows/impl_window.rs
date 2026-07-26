@@ -350,8 +350,7 @@ impl ImplWindow {
             }
 
             let pid = get_window_pid(foreground_window);
-            let app_name = get_app_name(pid)
-                .unwrap_or_else(|_| "Unknown".to_string());
+            let app_name = get_app_name(pid).unwrap_or_else(|_| "Unknown".to_string());
 
             Ok(app_name)
         }
@@ -369,8 +368,7 @@ impl ImplWindow {
             }
 
             let pid = get_window_pid(foreground_window);
-            let app_name = get_app_name(pid)
-                .unwrap_or_else(|_| "Unknown".to_string());
+            let app_name = get_app_name(pid).unwrap_or_else(|_| "Unknown".to_string());
 
             let impl_window = ImplWindow::new(foreground_window);
             let display_serial = impl_window

@@ -1,5 +1,7 @@
 mod error;
 mod monitor;
+#[cfg(target_os = "linux")]
+mod monitor_topology;
 mod video_recorder;
 mod window;
 
@@ -23,7 +25,20 @@ pub use image;
 
 pub use error::{XCapError, XCapResult};
 pub use monitor::Monitor;
+#[cfg(target_os = "linux")]
+pub use monitor_topology::MonitorTopologyWatcher;
 pub use window::Window;
 
+pub use video_recorder::CaptureBackendKind;
 pub use video_recorder::Frame;
+pub use video_recorder::FrameBuffer;
+pub use video_recorder::FramePixelFormat;
 pub use video_recorder::VideoRecorder;
+pub use video_recorder::VideoRecorderConfig;
+
+#[cfg(target_os = "macos")]
+pub use platform::native_frame::NativeFrameSurface;
+#[cfg(target_os = "macos")]
+pub use platform::native_video_writer::{
+    NativeVideoCodec, NativeVideoWriter, NativeVideoWriterFinish,
+};

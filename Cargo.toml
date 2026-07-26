@@ -13,7 +13,10 @@ keywords = ["screen", "monitor", "window", "capture", "image"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [features]
+default = []
 image = ["image/default"]
+windows-wgc = []
+x11-xshm = ["xcb/render", "xcb/shm"]
 
 [dependencies]
 image = { version = "0.25", default-features = false, features = ["png"] }
@@ -22,13 +25,17 @@ scopeguard = "1.2"
 thiserror = "2.0"
 
 [target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
 dispatch2 = "0.3"
 objc2 = "0.6.3"
 objc2-app-kit = "0.3.2"
 objc2-core-foundation = "0.3.2"
 objc2-core-graphics = "0.3.2"
 objc2-foundation = "0.3.2"
-objc2-av-foundation = "0.3.2"
+objc2-av-foundation = { version = "0.3.2", features = [
+    "objc2-core-media",
+    "objc2-core-video",
+] }
 objc2-core-media = "0.3.2"
 objc2-core-video = "0.3.2"
 objc2-screen-capture-kit = { version = "0.3.2", features = ["block2"] }
@@ -38,6 +45,11 @@ tokio = { version = "1", features = ["rt", "sync"] }
 [target.'cfg(target_os = "windows")'.dependencies]
 widestring = "1.2"
 windows = { version = "0.62.2", features = [
+    "Foundation",
+    "Graphics",
+    "Graphics_Capture",
+    "Graphics_DirectX",
+    "Graphics_DirectX_Direct3D11",
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
     "Win32_Graphics_Dwm",
@@ -54,12 +66,16 @@ windows = { version = "0.62.2", features = [
     "Win32_Graphics_Direct3D11",
     "Win32_Graphics_Dxgi_Common",
     "Win32_System_Com",
+    "Win32_System_WinRT",
+    "Win32_System_WinRT_Direct3D11",
+    "Win32_System_WinRT_Graphics_Capture",
     "Win32_System_Ole",
     "Win32_System_Variant",
     "Win32_System_Wmi",
 ] }
 
 [target.'cfg(target_os="linux")'.dependencies]
+libc = "0.2"
 url = "2.5"
 zbus = "5.12"
 rand = "0.9"

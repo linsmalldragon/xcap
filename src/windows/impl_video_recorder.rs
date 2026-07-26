@@ -1,10 +1,11 @@
 use std::{
-    slice,
     sync::{
-        Arc,
-        mpsc::{Receiver, SyncSender, sync_channel},
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+        mpsc::Receiver,
     },
     thread,
+    time::{Duration, Instant, SystemTime},
 };
 
 use windows::{
@@ -13,10 +14,9 @@ use windows::{
         Graphics::{
             Direct3D::D3D_DRIVER_TYPE_HARDWARE,
             Direct3D11::{
-                D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
-                D3D11_CREATE_DEVICE_SINGLETHREADED, D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE,
-                D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING, D3D11CreateDevice,
-                ID3D11Device, ID3D11DeviceContext, ID3D11Resource, ID3D11Texture2D,
+                D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_CREATE_DEVICE_SINGLETHREADED,
+                D3D11_SDK_VERSION, D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext,
+                ID3D11Texture2D,
             },
             Dxgi::{
                 DXGI_ERROR_WAIT_TIMEOUT, DXGI_OUTDUPL_FRAME_INFO, IDXGIDevice, IDXGIOutput1,
@@ -30,69 +30,75 @@ use windows::{
 
 use crate::{
     XCapError, XCapResult,
-    video_recorder::{Frame, RecorderWaker},
+    video_recorder::{
+        CaptureBackendKind, Frame, FrameBufferPool, LatestFrameSender, RecorderWorkerControl,
+        VideoRecorderConfig, frame_interval, latest_frame_channel,
+        set_current_thread_utility_priority,
+    },
 };
 
-use super::utils::bgra_to_rgba;
+use super::d3d11_readback::{D3d11ReadbackState, texture_to_frame as readback_texture_to_frame};
+#[cfg(feature = "windows-wgc")]
+use super::wgc_video_recorder::WgcVideoRecorder;
 
 pub fn texture_to_frame(
     d3d_device: &ID3D11Device,
     d3d_context: &ID3D11DeviceContext,
     source_texture: ID3D11Texture2D,
 ) -> XCapResult<Frame> {
-    unsafe {
-        let mut source_desc = D3D11_TEXTURE2D_DESC::default();
-        source_texture.GetDesc(&mut source_desc);
-        source_desc.BindFlags = 0;
-        source_desc.MiscFlags = 0;
-        source_desc.Usage = D3D11_USAGE_STAGING;
-        source_desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ.0 as u32;
+    let readback_state = Mutex::new(D3d11ReadbackState::default());
+    readback_texture_to_frame(
+        d3d_device,
+        d3d_context,
+        source_texture,
+        &readback_state,
+        None,
+        None,
+        VideoRecorderConfig::default(),
+        CaptureBackendKind::WindowsDxgi,
+    )?
+    .ok_or_else(|| XCapError::new("frame buffer unavailable"))
+}
 
-        let copy_texture = {
-            let mut texture = None;
-            d3d_device.CreateTexture2D(&source_desc, None, Some(&mut texture))?;
-            texture.ok_or(XCapError::new("CreateTexture2D failed"))?
-        };
-
-        d3d_context.CopyResource(Some(&copy_texture.cast()?), Some(&source_texture.cast()?));
-
-        let resource: ID3D11Resource = copy_texture.cast()?;
-        let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
-        d3d_context.Map(
-            Some(&resource.clone()),
-            0,
-            D3D11_MAP_READ,
-            0,
-            Some(&mut mapped),
-        )?;
-
-        // Get a slice of bytes
-        let bgra = slice::from_raw_parts(
-            mapped.pData.cast(),
-            (source_desc.Height * mapped.RowPitch) as usize,
-        );
-
-        d3d_context.Unmap(Some(&resource), 0);
-
-        Ok(Frame::new(
-            source_desc.Width,
-            source_desc.Height,
-            bgra_to_rgba(bgra.to_owned()),
-        ))
-    }
+fn texture_to_frame_inner(
+    d3d_device: &ID3D11Device,
+    d3d_context: &ID3D11DeviceContext,
+    source_texture: ID3D11Texture2D,
+    readback_state: &Mutex<D3d11ReadbackState>,
+    buffer_pool: Option<&Arc<FrameBufferPool>>,
+    captured: Option<(SystemTime, Instant)>,
+    config: VideoRecorderConfig,
+) -> XCapResult<Option<Frame>> {
+    readback_texture_to_frame(
+        d3d_device,
+        d3d_context,
+        source_texture,
+        readback_state,
+        buffer_pool,
+        captured,
+        config,
+        CaptureBackendKind::WindowsDxgi,
+    )
 }
 
 #[derive(Debug, Clone)]
-pub struct ImplVideoRecorder {
+pub(crate) struct DxgiVideoRecorder {
     d3d_device: ID3D11Device,
     d3d_context: ID3D11DeviceContext,
     duplication: IDXGIOutputDuplication,
-    recorder_waker: Arc<RecorderWaker>,
-    tx: SyncSender<Frame>,
+    worker_control: Arc<RecorderWorkerControl>,
+    frame_interval: Duration,
+    buffer_pool: Arc<FrameBufferPool>,
+    latest_dropped: Arc<AtomicUsize>,
+    readback_state: Arc<Mutex<D3d11ReadbackState>>,
+    config: VideoRecorderConfig,
 }
 
-impl ImplVideoRecorder {
-    pub fn new(h_monitor: HMONITOR) -> XCapResult<(Self, Receiver<Frame>)> {
+impl DxgiVideoRecorder {
+    pub fn new(
+        h_monitor: HMONITOR,
+        config: VideoRecorderConfig,
+    ) -> XCapResult<(Self, Receiver<Frame>)> {
         unsafe {
             let mut d3d_device = None;
             D3D11CreateDevice(
@@ -123,74 +129,189 @@ impl ImplVideoRecorder {
                 let duplication = output1.DuplicateOutput(&dxgi_device)?;
 
                 if output_desc.Monitor == h_monitor {
-                    let (tx, sx) = sync_channel(0);
+                    let (tx, sx) = latest_frame_channel();
+                    let latest_dropped = tx.dropped_counter();
+                    let buffer_pool = FrameBufferPool::new(2);
+                    let worker_control = RecorderWorkerControl::new();
                     let s = Self {
                         d3d_device,
                         d3d_context,
                         duplication,
-                        recorder_waker: Arc::new(RecorderWaker::new()),
-                        tx,
+                        worker_control,
+                        frame_interval: frame_interval(config.fps),
+                        buffer_pool,
+                        latest_dropped,
+                        readback_state: Arc::new(Mutex::new(D3d11ReadbackState::default())),
+                        config,
                     };
-                    s.on_frame()?;
+                    s.on_frame(tx)?;
                     return Ok((s, sx));
                 }
             }
         }
     }
 
-    pub fn on_frame(&self) -> XCapResult<()> {
+    fn on_frame(&self, tx: LatestFrameSender) -> XCapResult<()> {
         let duplication = self.duplication.clone();
         let d3d_device = self.d3d_device.clone();
         let d3d_context = self.d3d_context.clone();
-        let recorder_waker = self.recorder_waker.clone();
-        let tx = self.tx.clone();
+        let recorder_waker = self.worker_control.waker();
+        let shutdown = self.worker_control.shutdown_flag();
+        let frame_interval = self.frame_interval;
+        let buffer_pool = self.buffer_pool.clone();
+        let readback_state = self.readback_state.clone();
+        let config = self.config;
 
-        thread::spawn(move || {
-            loop {
-                recorder_waker.wait()?;
-
-                let mut frame_info = DXGI_OUTDUPL_FRAME_INFO::default();
-                let mut resource: Option<IDXGIResource> = None;
-                unsafe {
-                    match duplication.AcquireNextFrame(200, &mut frame_info, &mut resource) {
-                        Err(err) => {
-                            // 尝试释放当前帧，不然不能获取到下一帧数据
-                            let _ = duplication.ReleaseFrame();
-                            if err.code() != DXGI_ERROR_WAIT_TIMEOUT {
-                                break Err::<(), XCapError>(XCapError::new(
-                                    "DXGI_ERROR_UNSUPPORTED",
-                                ));
+        let worker = thread::spawn(move || {
+            set_current_thread_utility_priority();
+            let result = (|| -> XCapResult<()> {
+                let mut last_capture_attempt: Option<Instant> = None;
+                loop {
+                    recorder_waker.wait()?;
+                    if shutdown.load(Ordering::Acquire) {
+                        break;
+                    }
+                    if let Some(last_capture_attempt) = last_capture_attempt {
+                        let elapsed = last_capture_attempt.elapsed();
+                        if elapsed < frame_interval {
+                            if !recorder_waker
+                                .wait_timeout_while_running(frame_interval - elapsed)?
+                            {
+                                continue;
+                            }
+                            if shutdown.load(Ordering::Acquire) {
+                                break;
                             }
                         }
-                        _ => {
-                            // 如何确定 AcquireNextFrame 执行成功
-                            if frame_info.LastPresentTime != 0 {
-                                let resource =
-                                    resource.ok_or(XCapError::new("AcquireNextFrame failed"))?;
-                                let source_texture = resource.cast::<ID3D11Texture2D>()?;
-                                let frame =
-                                    texture_to_frame(&d3d_device, &d3d_context, source_texture)?;
-                                let _ = tx.send(frame);
-                            }
+                    }
+                    last_capture_attempt = Some(Instant::now());
 
-                            // 最后释放帧，不然获取不到当前帧的数据
-                            duplication.ReleaseFrame()?;
+                    let mut frame_info = DXGI_OUTDUPL_FRAME_INFO::default();
+                    let mut resource: Option<IDXGIResource> = None;
+                    unsafe {
+                        match duplication.AcquireNextFrame(200, &mut frame_info, &mut resource) {
+                            Err(err) => {
+                                // 尝试释放当前帧，不然不能获取到下一帧数据
+                                let _ = duplication.ReleaseFrame();
+                                if err.code() != DXGI_ERROR_WAIT_TIMEOUT {
+                                    return Err(XCapError::new("DXGI_ERROR_UNSUPPORTED"));
+                                }
+                            }
+                            _ => {
+                                // 如何确定 AcquireNextFrame 执行成功
+                                if frame_info.LastPresentTime != 0 {
+                                    let resource = resource
+                                        .ok_or(XCapError::new("AcquireNextFrame failed"))?;
+                                    let source_texture = resource.cast::<ID3D11Texture2D>()?;
+                                    let captured_at = SystemTime::now();
+                                    let captured_monotonic_at = Instant::now();
+                                    if let Some(frame) = texture_to_frame_inner(
+                                        &d3d_device,
+                                        &d3d_context,
+                                        source_texture,
+                                        &readback_state,
+                                        Some(&buffer_pool),
+                                        Some((captured_at, captured_monotonic_at)),
+                                        config,
+                                    )? {
+                                        let _ = tx.send_latest(frame);
+                                    }
+                                }
+
+                                // 最后释放帧，不然获取不到当前帧的数据
+                                duplication.ReleaseFrame()?;
+                            }
                         }
                     }
                 }
+                Ok(())
+            })();
+            if let Err(error) = result {
+                log::error!("DXGI recorder worker failed: {error:?}");
             }
         });
+        self.worker_control.attach_worker(worker)?;
 
         Ok(())
     }
     pub fn start(&self) -> XCapResult<()> {
-        self.recorder_waker.wake()?;
-
-        Ok(())
+        self.worker_control.start()
     }
     pub fn stop(&self) -> XCapResult<()> {
-        self.recorder_waker.sleep()?;
+        self.worker_control.stop()
+    }
 
-        Ok(())
+    fn dropped_frames(&self) -> usize {
+        self.buffer_pool
+            .dropped_frames()
+            .saturating_add(self.latest_dropped.load(Ordering::Relaxed))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum ImplVideoRecorder {
+    Dxgi(DxgiVideoRecorder),
+    #[cfg(feature = "windows-wgc")]
+    Wgc(WgcVideoRecorder),
+}
+
+impl ImplVideoRecorder {
+    pub fn new(
+        h_monitor: HMONITOR,
+        config: VideoRecorderConfig,
+    ) -> XCapResult<(Self, Receiver<Frame>)> {
+        #[cfg(feature = "windows-wgc")]
+        if config.prefer_windows_wgc {
+            match WgcVideoRecorder::new(h_monitor, config) {
+                Ok((recorder, receiver)) => {
+                    log::info!("Windows capture backend: WGC");
+                    return Ok((Self::Wgc(recorder), receiver));
+                }
+                Err(error) => {
+                    log::warn!("WGC initialization failed, falling back to DXGI: {error}");
+                }
+            }
+        }
+
+        #[cfg(not(feature = "windows-wgc"))]
+        if config.prefer_windows_wgc {
+            log::warn!("WGC runtime gate requested without windows-wgc build feature; using DXGI");
+        }
+
+        let (recorder, receiver) = DxgiVideoRecorder::new(h_monitor, config)?;
+        log::info!("Windows capture backend: DXGI");
+        Ok((Self::Dxgi(recorder), receiver))
+    }
+
+    pub fn start(&self) -> XCapResult<()> {
+        match self {
+            Self::Dxgi(recorder) => recorder.start(),
+            #[cfg(feature = "windows-wgc")]
+            Self::Wgc(recorder) => recorder.start(),
+        }
+    }
+
+    pub fn stop(&self) -> XCapResult<()> {
+        match self {
+            Self::Dxgi(recorder) => recorder.stop(),
+            #[cfg(feature = "windows-wgc")]
+            Self::Wgc(recorder) => recorder.stop(),
+        }
+    }
+
+    pub(crate) fn dropped_frames(&self) -> usize {
+        match self {
+            Self::Dxgi(recorder) => recorder.dropped_frames(),
+            #[cfg(feature = "windows-wgc")]
+            Self::Wgc(recorder) => recorder.dropped_frames(),
+        }
+    }
+
+    pub(crate) fn terminal_error(&self) -> Option<String> {
+        match self {
+            Self::Dxgi(_) => None,
+            #[cfg(feature = "windows-wgc")]
+            Self::Wgc(recorder) => recorder.terminal_error(),
+        }
     }
 }

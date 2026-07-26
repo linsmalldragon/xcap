@@ -3,7 +3,8 @@ use std::sync::mpsc::Receiver;
 use image::RgbaImage;
 
 use crate::{
-    VideoRecorder, error::XCapResult, platform::impl_monitor::ImplMonitor, video_recorder::Frame,
+    VideoRecorder, VideoRecorderConfig, error::XCapResult, platform::impl_monitor::ImplMonitor,
+    video_recorder::Frame,
 };
 
 #[derive(Debug, Clone)]
@@ -170,7 +171,26 @@ impl Monitor {
     }
 
     pub fn video_recorder(&self) -> XCapResult<(VideoRecorder, Receiver<Frame>)> {
-        let (impl_video_recorder, sx) = self.impl_monitor.video_recorder()?;
+        self.video_recorder_with_config(VideoRecorderConfig::default())
+    }
+
+    /// Creates a persistent platform recorder with bounded latest-frame
+    /// delivery and producer-side frame-rate throttling.
+    pub fn video_recorder_with_fps(
+        &self,
+        fps: f64,
+    ) -> XCapResult<(VideoRecorder, Receiver<Frame>)> {
+        self.video_recorder_with_config(VideoRecorderConfig {
+            fps,
+            ..VideoRecorderConfig::default()
+        })
+    }
+
+    pub fn video_recorder_with_config(
+        &self,
+        config: VideoRecorderConfig,
+    ) -> XCapResult<(VideoRecorder, Receiver<Frame>)> {
+        let (impl_video_recorder, sx) = self.impl_monitor.video_recorder_with_config(config)?;
 
         Ok((VideoRecorder::new(impl_video_recorder), sx))
     }

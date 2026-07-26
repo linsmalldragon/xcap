@@ -10,25 +10,24 @@
 //! - ✅ 支持多显示器环境
 
 use windows::{
-    core::{BSTR, HSTRING},
     Win32::{
         Graphics::Gdi::HMONITOR,
         System::{
             Com::{
-                CoCreateInstance, CoInitializeEx, CoUninitialize, SAFEARRAY,
-                CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
+                CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx,
+                CoUninitialize, SAFEARRAY,
             },
             Ole::{
-                SafeArrayAccessData, SafeArrayGetLBound, SafeArrayGetUBound,
-                SafeArrayUnaccessData,
+                SafeArrayAccessData, SafeArrayGetLBound, SafeArrayGetUBound, SafeArrayUnaccessData,
             },
             Variant::{VARIANT, VT_ARRAY, VT_UI1},
             Wmi::{
-                IWbemClassObject, IWbemLocator, IWbemServices, WbemLocator,
-                WBEM_FLAG_FORWARD_ONLY, WBEM_FLAG_RETURN_IMMEDIATELY, WBEM_INFINITE,
+                IWbemClassObject, IWbemLocator, IWbemServices, WBEM_FLAG_FORWARD_ONLY,
+                WBEM_FLAG_RETURN_IMMEDIATELY, WBEM_INFINITE, WbemLocator,
             },
         },
     },
+    core::{BSTR, HSTRING},
 };
 
 use crate::error::{XCapError, XCapResult};
@@ -50,8 +49,15 @@ pub fn get_display_uuid_from_wmi(_h_monitor: HMONITOR) -> XCapResult<String> {
 
         // 3. 连接到 WMI namespace
         let namespace = BSTR::from("root\\wmi");
-        let services: IWbemServices =
-            locator.ConnectServer(&namespace, &BSTR::default(), &BSTR::default(), &BSTR::default(), 0, &BSTR::default(), None)?;
+        let services: IWbemServices = locator.ConnectServer(
+            &namespace,
+            &BSTR::default(),
+            &BSTR::default(),
+            &BSTR::default(),
+            0,
+            &BSTR::default(),
+            None,
+        )?;
 
         // 4. 查询 WmiMonitorID
         let query = BSTR::from("SELECT * FROM WmiMonitorID");
@@ -104,8 +110,15 @@ pub fn get_display_serial_from_wmi(_h_monitor: HMONITOR) -> XCapResult<String> {
 
         // 3. 连接到 WMI namespace
         let namespace = BSTR::from("root\\wmi");
-        let services: IWbemServices =
-            locator.ConnectServer(&namespace, &BSTR::default(), &BSTR::default(), &BSTR::default(), 0, &BSTR::default(), None)?;
+        let services: IWbemServices = locator.ConnectServer(
+            &namespace,
+            &BSTR::default(),
+            &BSTR::default(),
+            &BSTR::default(),
+            0,
+            &BSTR::default(),
+            None,
+        )?;
 
         // 4. 查询 WmiMonitorID
         let query = BSTR::from("SELECT * FROM WmiMonitorID");
@@ -142,10 +155,7 @@ pub fn get_display_serial_from_wmi(_h_monitor: HMONITOR) -> XCapResult<String> {
 }
 
 /// 从 WMI 对象中提取字符串属性
-unsafe fn get_string_property(
-    obj: &IWbemClassObject,
-    property_name: &str,
-) -> XCapResult<String> {
+unsafe fn get_string_property(obj: &IWbemClassObject, property_name: &str) -> XCapResult<String> {
     let prop_name = HSTRING::from(property_name);
     let mut value = VARIANT::default();
 
@@ -216,4 +226,3 @@ pub fn get_display_serial_number(h_monitor: HMONITOR) -> XCapResult<String> {
         "Display serial number not available. This is common for some monitors on Windows.",
     ))
 }
-

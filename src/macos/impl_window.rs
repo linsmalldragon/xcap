@@ -1,10 +1,6 @@
-use std::{
-    ffi::c_void,
-    ptr::NonNull,
-    sync::Arc,
-};
+use std::{ffi::c_void, ptr::NonNull, sync::Arc};
 
-use tokio::sync::{oneshot, Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, oneshot};
 
 use block2::RcBlock;
 use dispatch2::DispatchQueue;

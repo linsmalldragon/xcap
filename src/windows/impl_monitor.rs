@@ -21,7 +21,7 @@ use windows::{
 
 use crate::{
     error::{XCapError, XCapResult},
-    video_recorder::Frame,
+    video_recorder::{Frame, VideoRecorderConfig},
 };
 
 use super::{
@@ -340,7 +340,24 @@ impl ImplMonitor {
     }
 
     pub fn video_recorder(&self) -> XCapResult<(ImplVideoRecorder, Receiver<Frame>)> {
-        ImplVideoRecorder::new(self.h_monitor)
+        self.video_recorder_with_config(VideoRecorderConfig::default())
+    }
+
+    pub fn video_recorder_with_fps(
+        &self,
+        fps: f64,
+    ) -> XCapResult<(ImplVideoRecorder, Receiver<Frame>)> {
+        self.video_recorder_with_config(VideoRecorderConfig {
+            fps,
+            ..VideoRecorderConfig::default()
+        })
+    }
+
+    pub fn video_recorder_with_config(
+        &self,
+        config: VideoRecorderConfig,
+    ) -> XCapResult<(ImplVideoRecorder, Receiver<Frame>)> {
+        ImplVideoRecorder::new(self.h_monitor, config)
     }
 
     /// 获取显示器的 UUID

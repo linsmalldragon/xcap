@@ -1,103 +1,143 @@
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+        mpsc::Receiver,
+    },
+    thread,
+    time::{Duration, Instant, SystemTime},
+};
+
+use crate::{
+    error::XCapResult,
+    video_recorder::{
+        CaptureBackendKind, Frame, FrameBufferPool, FramePixelFormat, LatestFrameSender,
+        RecorderWorkerControl, VideoRecorderConfig, frame_interval, latest_frame_channel,
+        set_current_thread_utility_priority,
+    },
+};
+
 use super::impl_monitor::ImplMonitor;
-use crate::error::{XCapError, XCapResult};
-use crate::video_recorder::{Frame, RecorderWaker};
-use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, Mutex};
-use std::thread;
-use std::time::Duration;
 
 #[derive(Debug, Clone)]
 pub struct XorgVideoRecorder {
     monitor: ImplMonitor,
-    sender: Sender<Frame>,
-    running: Arc<Mutex<bool>>,
-    recorder_waker: Arc<RecorderWaker>,
+    worker_control: Arc<RecorderWorkerControl>,
+    frame_interval: Duration,
+    buffer_pool: Arc<FrameBufferPool>,
+    latest_dropped: Arc<AtomicUsize>,
 }
 
 impl XorgVideoRecorder {
-    pub fn new(monitor: ImplMonitor) -> XCapResult<(Self, Receiver<Frame>)> {
-        let (sender, receiver) = mpsc::channel();
+    pub fn new(
+        monitor: ImplMonitor,
+        config: VideoRecorderConfig,
+    ) -> XCapResult<(Self, Receiver<Frame>)> {
+        if let Ok(source_size) = monitor
+            .width()
+            .and_then(|width| monitor.height().map(|height| (width, height)))
+        {
+            let requested_size = config.output_dimensions(source_size.0, source_size.1, true);
+            if requested_size != source_size {
+                log::warn!(
+                    "XGetImage cannot scale at the X server capture boundary; capturing native {}x{} instead of requested {}x{}",
+                    source_size.0,
+                    source_size.1,
+                    requested_size.0,
+                    requested_size.1
+                );
+            }
+        }
+        let (sender, receiver) = latest_frame_channel();
+        let latest_dropped = sender.dropped_counter();
+        let worker_control = RecorderWorkerControl::new();
         let recorder = Self {
             monitor,
-            sender,
-            running: Arc::new(Mutex::new(false)),
-            recorder_waker: Arc::new(RecorderWaker::new()),
+            worker_control,
+            frame_interval: frame_interval(config.fps),
+            buffer_pool: FrameBufferPool::new(2),
+            latest_dropped,
         };
 
-        recorder.on_frame()?;
+        recorder.on_frame(sender)?;
 
         Ok((recorder, receiver))
     }
 
-    pub fn on_frame(&self) -> XCapResult<()> {
+    fn on_frame(&self, sender: LatestFrameSender) -> XCapResult<()> {
         let monitor = self.monitor.clone();
-        let sender = self.sender.clone();
-        let running_flag = self.running.clone();
-        let recorder_waker = self.recorder_waker.clone();
+        let recorder_waker = self.worker_control.waker();
+        let shutdown = self.worker_control.shutdown_flag();
+        let frame_interval = self.frame_interval;
+        let buffer_pool = self.buffer_pool.clone();
 
-        thread::spawn(move || {
-            loop {
-                if let Err(err) = recorder_waker.wait() {
-                    log::error!("Recorder waker error: {err:?}");
-                    break Err(err);
-                }
-
-                let is_running = match running_flag.lock() {
-                    Ok(guard) => *guard,
-                    Err(e) => {
-                        log::error!("Failed to lock running flag: {e:?}");
-                        break Err(XCapError::from(e));
+        let worker = thread::spawn(move || {
+            set_current_thread_utility_priority();
+            let result = (|| -> XCapResult<()> {
+                loop {
+                    recorder_waker.wait()?;
+                    if shutdown.load(Ordering::Acquire) {
+                        break;
                     }
-                };
 
-                if !is_running {
-                    break Ok(());
-                }
-
-                match monitor.capture_image() {
-                    Ok(image) => {
-                        let width = image.width();
-                        let height = image.height();
-                        let raw = image.into_raw();
-
-                        let frame = Frame::new(width, height, raw);
-                        if let Err(e) = sender.send(frame) {
-                            log::error!("Failed to send frame: {e:?}");
-                            break Err(XCapError::new(format!("Failed to send frame: {e}")));
+                    match monitor.capture_image() {
+                        Ok(image) => {
+                            let captured_at = SystemTime::now();
+                            let captured_monotonic_at = Instant::now();
+                            let width = image.width();
+                            let height = image.height();
+                            let raw = image.into_raw();
+                            if let Some(mut buffer) = buffer_pool.try_acquire(raw.len()) {
+                                buffer.copy_from_slice(&raw);
+                                let frame = Frame::from_pooled(
+                                    width,
+                                    height,
+                                    width as usize * 4,
+                                    buffer,
+                                    FramePixelFormat::Rgba8,
+                                    captured_at,
+                                    captured_monotonic_at,
+                                    CaptureBackendKind::LinuxXorg,
+                                );
+                                if sender.send_latest(frame).is_err() {
+                                    break;
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            log::error!("Failed to capture frame: {error:?}");
+                            thread::sleep(Duration::from_millis(10));
+                            continue;
                         }
                     }
-                    Err(e) => {
-                        log::error!("Failed to capture frame: {e:?}");
-                        thread::sleep(Duration::from_millis(10));
-                        continue;
+
+                    let _ = recorder_waker.wait_timeout_while_running(frame_interval)?;
+                    if shutdown.load(Ordering::Acquire) {
+                        break;
                     }
                 }
-
-                thread::sleep(Duration::from_millis(1));
+                Ok(())
+            })();
+            if let Err(error) = result {
+                log::error!("XGetImage recorder worker failed: {error:?}");
             }
         });
+        self.worker_control.attach_worker(worker)?;
 
         Ok(())
     }
 
     pub fn start(&self) -> XCapResult<()> {
-        let mut running = self.running.lock().map_err(XCapError::from)?;
-        if *running {
-            return Ok(());
-        }
-        *running = true;
-
-        self.recorder_waker.wake()?;
-
-        Ok(())
+        self.worker_control.start()
     }
 
     pub fn stop(&self) -> XCapResult<()> {
-        let mut running = self.running.lock().map_err(XCapError::from)?;
-        *running = false;
+        self.worker_control.stop()
+    }
 
-        self.recorder_waker.sleep()?;
-
-        Ok(())
+    pub(crate) fn dropped_frames(&self) -> usize {
+        self.buffer_pool
+            .dropped_frames()
+            .saturating_add(self.latest_dropped.load(Ordering::Relaxed))
     }
 }

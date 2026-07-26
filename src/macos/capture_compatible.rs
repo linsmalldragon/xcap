@@ -1,6 +1,5 @@
 /// 兼容性捕获模块：使用传统的 CGWindowListCreateImage API
 /// 作为 ScreenCaptureKit 的回退方案
-
 use image::RgbaImage;
 use objc2_core_foundation::CGRect;
 use objc2_core_graphics::{
@@ -73,4 +72,3 @@ fn capture_with_cgwindowlist_sync(
             .ok_or_else(|| XCapError::new("RgbaImage::from_raw failed"))
     }
 }
-

@@ -190,9 +190,7 @@ impl ImplWindow {
             .app_name()
             .unwrap_or_else(|_| "Unknown".to_string());
 
-        let pid = impl_window
-            .pid()
-            .unwrap_or_else(|_| 0) as i32;
+        let pid = impl_window.pid().unwrap_or_else(|_| 0) as i32;
 
         let display_serial = impl_window
             .current_monitor()

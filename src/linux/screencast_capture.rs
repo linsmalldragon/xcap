@@ -32,10 +32,7 @@ use zbus::zvariant::Value;
 
 use crate::{XCapError, XCapResult};
 
-use super::{
-    utils::get_zbus_connection,
-    wayland_video_recorder::ScreenCast,
-};
+use super::{utils::get_zbus_connection, wayland_video_recorder::ScreenCast};
 
 struct StreamInfo {
     source_x: i32,
@@ -90,10 +87,14 @@ fn init_screencast() -> XCapResult<ScreenCastCaptureInner> {
         let result: Result<(u32, zbus::zvariant::Value), _> = body.deserialize();
         if let Ok((code, _)) = result {
             if code == 1 {
-                return Err(XCapError::new("ScreenCast: user cancelled source selection"));
+                return Err(XCapError::new(
+                    "ScreenCast: user cancelled source selection",
+                ));
             }
             if code != 0 {
-                return Err(XCapError::new(format!("ScreenCast: SelectSources failed with code {code}")));
+                return Err(XCapError::new(format!(
+                    "ScreenCast: SelectSources failed with code {code}"
+                )));
             }
         }
     }
@@ -210,7 +211,11 @@ fn run_pipewire_capture(
                             return;
                         }
                         let mut buf = vec![0u8; expected_pixels * 4];
-                        for (src, dst) in frame_data.chunks_exact(3).take(expected_pixels).zip(buf.chunks_exact_mut(4)) {
+                        for (src, dst) in frame_data
+                            .chunks_exact(3)
+                            .take(expected_pixels)
+                            .zip(buf.chunks_exact_mut(4))
+                        {
                             dst[0] = src[0];
                             dst[1] = src[1];
                             dst[2] = src[2];
@@ -317,7 +322,13 @@ fn run_pipewire_capture(
     Ok(())
 }
 
-fn find_matching_stream(streams: &[StreamInfo], x: i32, y: i32, width: i32, height: i32) -> Option<usize> {
+fn find_matching_stream(
+    streams: &[StreamInfo],
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+) -> Option<usize> {
     let req_cx = x + width / 2;
     let req_cy = y + height / 2;
 
@@ -342,7 +353,9 @@ fn find_matching_stream(streams: &[StreamInfo], x: i32, y: i32, width: i32, heig
 pub fn screencast_capture(x: i32, y: i32, width: i32, height: i32) -> XCapResult<RgbaImage> {
     // Fast path: permanently failed, don't retry
     if SCREENCAST_STATE.load(Ordering::Relaxed) == 2 {
-        return Err(XCapError::new("ScreenCast: previously failed, not retrying"));
+        return Err(XCapError::new(
+            "ScreenCast: previously failed, not retrying",
+        ));
     }
 
     // Get the matching stream's frame Arc, releasing the instance lock ASAP
@@ -352,7 +365,9 @@ pub fn screencast_capture(x: i32, y: i32, width: i32, height: i32) -> XCapResult
         if instance_guard.is_none() {
             // Re-check state under lock to avoid retrying after another thread's failure
             if SCREENCAST_STATE.load(Ordering::Relaxed) == 2 {
-                return Err(XCapError::new("ScreenCast: previously failed, not retrying"));
+                return Err(XCapError::new(
+                    "ScreenCast: previously failed, not retrying",
+                ));
             }
             log::info!("Initializing ScreenCast capture session (one-time permission prompt)");
             match init_screencast() {
@@ -369,11 +384,16 @@ pub fn screencast_capture(x: i32, y: i32, width: i32, height: i32) -> XCapResult
 
         let inner = instance_guard.as_ref().unwrap();
 
-        let stream_idx = find_matching_stream(&inner.streams, x, y, width, height)
-            .ok_or(XCapError::new("ScreenCast: no stream covers the requested region"))?;
+        let stream_idx = find_matching_stream(&inner.streams, x, y, width, height).ok_or(
+            XCapError::new("ScreenCast: no stream covers the requested region"),
+        )?;
 
         let stream = &inner.streams[stream_idx];
-        (stream.latest_frame.clone(), stream.source_x, stream.source_y)
+        (
+            stream.latest_frame.clone(),
+            stream.source_x,
+            stream.source_y,
+        )
         // instance_guard drops here — other capture threads can proceed
     };
 
@@ -387,7 +407,9 @@ pub fn screencast_capture(x: i32, y: i32, width: i32, height: i32) -> XCapResult
             .map_err(|e| XCapError::new(format!("ScreenCast: condvar wait failed: {e}")))?;
 
         if result.1.timed_out() {
-            return Err(XCapError::new("ScreenCast: timed out waiting for first frame"));
+            return Err(XCapError::new(
+                "ScreenCast: timed out waiting for first frame",
+            ));
         }
 
         // Clone the image and release the frame lock immediately so PipeWire can update
@@ -439,7 +461,9 @@ fn restore_token_path() -> Option<std::path::PathBuf> {
 
 fn load_restore_token() -> Option<String> {
     let path = restore_token_path()?;
-    std::fs::read_to_string(&path).ok().filter(|s| !s.is_empty())
+    std::fs::read_to_string(&path)
+        .ok()
+        .filter(|s| !s.is_empty())
 }
 
 fn save_restore_token(token: &str) {

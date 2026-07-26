@@ -40,6 +40,20 @@ struct StreamCache {
     is_started: bool,
 }
 
+impl Drop for StreamCache {
+    fn drop(&mut self) {
+        if self.is_started {
+            // SCStream keeps capture resources alive until explicitly stopped.
+            // Thread-local cache destruction/replacement must therefore stop
+            // the stream rather than relying on Retained<SCStream>::drop.
+            unsafe {
+                self.stream.stopCaptureWithCompletionHandler(None);
+            }
+            self.is_started = false;
+        }
+    }
+}
+
 // 缓存 shareable_content 以减少重复获取的开销
 //
 // 注意：
@@ -66,6 +80,12 @@ thread_local! {
 // 缓存 macOS 版本检查结果，避免重复调用
 thread_local! {
     static SCKIT_AVAILABLE_CACHE: std::cell::Cell<Option<bool>> = std::cell::Cell::new(None);
+}
+
+fn invalidate_stream_cache(cache_key: (CGDirectDisplayID, usize, usize)) {
+    STREAM_CACHE.with(|cache| {
+        cache.borrow_mut().remove(&cache_key);
+    });
 }
 
 pub fn capture(
@@ -268,7 +288,7 @@ impl SCStreamOutputDelegate {
     }
 }
 
-fn fetch_shareable_content(
+pub(super) fn fetch_shareable_content(
     excluding_desktop_windows: bool,
 ) -> XCapResult<Retained<SCShareableContent>> {
     // 优化：检查线程本地缓存，如果缓存有效且参数匹配，直接返回
@@ -488,6 +508,21 @@ fn capture_with_screencapturekit(
                 Some(output_queue_ref),
             )
             .map_err(|err| XCapError::new(err.localizedDescription().to_string()))?;
+        // The output delegate and dispatch queue must remain alive until the
+        // output is detached. Register cleanup immediately after a successful
+        // add so every subsequent start/frame/conversion error path removes it.
+        defer! {
+            if let Err(err) = stream.removeStreamOutput_type_error(
+                output_delegate_protocol.as_ref(),
+                SCStreamOutputType::Screen,
+            ) {
+                debug!(
+                    "ScreenCaptureKit output removal failed; invalidating cached stream: {}",
+                    err.localizedDescription()
+                );
+                invalidate_stream_cache(cache_key);
+            }
+        }
         debug!("[性能] 9. 添加输出: {:?}", t9.elapsed());
 
         // 9. 启动流（如果需要）
@@ -516,14 +551,17 @@ fn capture_with_screencapturekit(
                     });
                 }
                 Ok(Err(err)) => {
+                    invalidate_stream_cache(cache_key);
                     return Err(XCapError::new(err.localizedDescription().to_string()));
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {
+                    invalidate_stream_cache(cache_key);
                     return Err(XCapError::new(
                         "Timed out while starting ScreenCaptureKit stream",
                     ));
                 }
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    invalidate_stream_cache(cache_key);
                     return Err(XCapError::new("Channel disconnected"));
                 }
             }
@@ -535,9 +573,11 @@ fn capture_with_screencapturekit(
         let frame_result = match frame_rx.recv_timeout(std::time::Duration::from_millis(200)) {
             Ok(result) => result,
             Err(mpsc::RecvTimeoutError::Timeout) => {
+                invalidate_stream_cache(cache_key);
                 return Err(XCapError::new("Timeout waiting for ScreenCaptureKit frame"));
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
+                invalidate_stream_cache(cache_key);
                 return Err(XCapError::new("Channel disconnected"));
             }
         };
@@ -545,19 +585,11 @@ fn capture_with_screencapturekit(
         let pixel_buffer = match frame_result {
             Ok(buffer) => buffer,
             Err(err) => {
+                invalidate_stream_cache(cache_key);
                 return Err(XCapError::new(err.localizedDescription().to_string()));
             }
         };
         debug!("[性能] 11. 等待一帧数据: {:?}", t11.elapsed());
-
-        // 优化：不停止流，保持运行状态以便下次复用
-        // 只移除当前的 output，流继续运行
-        let t12 = Instant::now();
-        let _ = stream.removeStreamOutput_type_error(
-            output_delegate_protocol.as_ref(),
-            SCStreamOutputType::Screen,
-        );
-        debug!("[性能] 12. 移除输出: {:?}", t12.elapsed());
 
         // 12. 转换为 RgbaImage
         let t13 = Instant::now();

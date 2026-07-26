@@ -12,7 +12,7 @@
 use core::ffi::c_void;
 use objc2::MainThreadMarker;
 use objc2_app_kit::NSScreen;
-use objc2_core_foundation::{CFString, CFUUID, CFDictionary};
+use objc2_core_foundation::{CFDictionary, CFString, CFUUID};
 use objc2_core_graphics::CGDirectDisplayID;
 use objc2_foundation::{NSNumber, NSString};
 
@@ -94,10 +94,11 @@ fn get_display_io_service(display_id: CGDirectDisplayID) -> XCapResult<io_servic
     let screens = NSScreen::screens(unsafe { MainThreadMarker::new_unchecked() });
     for screen in screens {
         let device_description = screen.deviceDescription();
-        let screen_number = match device_description.objectForKey(&NSString::from_str("NSScreenNumber")) {
-            Some(num) => num,
-            None => continue,
-        };
+        let screen_number =
+            match device_description.objectForKey(&NSString::from_str("NSScreenNumber")) {
+                Some(num) => num,
+                None => continue,
+            };
 
         let screen_id = match screen_number.downcast::<NSNumber>() {
             Ok(num) => num.unsignedIntValue(),
@@ -308,4 +309,3 @@ pub fn get_display_serial_number(display_id: CGDirectDisplayID) -> XCapResult<St
         )))
     }
 }
-

@@ -1,6 +1,10 @@
 use std::{
-    env::temp_dir, fs,
-    sync::{Mutex, atomic::{AtomicBool, Ordering}},
+    env::temp_dir,
+    fs,
+    sync::{
+        Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use image::RgbaImage;
@@ -96,18 +100,19 @@ pub fn wayland_capture(x: i32, y: i32, width: i32, height: i32) -> XCapResult<Rg
             }
             Err(e) => {
                 GNOME_SHELL_AVAILABLE.store(false, Ordering::Relaxed);
-                log::info!("org.gnome.Shell.Screenshot unavailable ({e}), will use ScreenCast portal");
+                log::info!(
+                    "org.gnome.Shell.Screenshot unavailable ({e}), will use ScreenCast portal"
+                );
                 drop(lock);
             }
         }
     }
 
     // Try ScreenCast portal (persistent session, only prompts once)
-    screencast_capture(x, y, width, height)
-        .or_else(|e| {
-            log::debug!("ScreenCast capture failed: {e}, trying wlroots");
-            wlroots_screenshot(x, y, width, height)
-        })
+    screencast_capture(x, y, width, height).or_else(|e| {
+        log::debug!("ScreenCast capture failed: {e}, trying wlroots");
+        wlroots_screenshot(x, y, width, height)
+    })
 }
 #[test]
 fn screnshot_multithreaded() {

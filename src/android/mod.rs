@@ -1,9 +1,11 @@
+use std::sync::mpsc::Receiver;
+
+use image::RgbaImage;
+
 use crate::{
     error::{XCapError, XCapResult},
-    video_recorder::Frame,
+    video_recorder::{Frame, VideoRecorderConfig},
 };
-use image::RgbaImage;
-use std::sync::mpsc::Receiver;
 
 #[derive(Debug, Clone)]
 pub struct ImplMonitor;
@@ -80,6 +82,20 @@ impl ImplMonitor {
     }
 
     pub fn video_recorder(&self) -> XCapResult<(ImplVideoRecorder, Receiver<Frame>)> {
+        Err(XCapError::NotSupported)
+    }
+
+    pub fn video_recorder_with_fps(
+        &self,
+        _fps: f64,
+    ) -> XCapResult<(ImplVideoRecorder, Receiver<Frame>)> {
+        Err(XCapError::NotSupported)
+    }
+
+    pub fn video_recorder_with_config(
+        &self,
+        _config: VideoRecorderConfig,
+    ) -> XCapResult<(ImplVideoRecorder, Receiver<Frame>)> {
         Err(XCapError::NotSupported)
     }
 }
@@ -159,6 +175,10 @@ impl ImplVideoRecorder {
 
     pub fn stop(&self) -> XCapResult<()> {
         Err(XCapError::NotSupported)
+    }
+
+    pub(crate) fn dropped_frames(&self) -> usize {
+        0
     }
 }
 

@@ -11,9 +11,9 @@
 
 use std::ffi::CStr;
 use xcb::{
+    Xid,
     randr::{GetOutputInfo, GetOutputProperty, Output},
     x::{ATOM_INTEGER, CURRENT_TIME},
-    Xid,
 };
 
 use crate::error::{XCapError, XCapResult};
@@ -51,12 +51,8 @@ fn parse_edid(edid_data: &[u8]) -> XCapResult<EdidInfo> {
     let product_code = u16::from_le_bytes([edid_data[10], edid_data[11]]);
 
     // 提取序列号 (字节 12-15, 小端序)
-    let serial_number = u32::from_le_bytes([
-        edid_data[12],
-        edid_data[13],
-        edid_data[14],
-        edid_data[15],
-    ]);
+    let serial_number =
+        u32::from_le_bytes([edid_data[12], edid_data[13], edid_data[14], edid_data[15]]);
 
     Ok(EdidInfo {
         manufacturer_id,
@@ -191,4 +187,3 @@ pub fn get_display_serial_number(output: Output) -> XCapResult<String> {
         "Display serial number not available. EDID data could not be read.",
     ))
 }
-
