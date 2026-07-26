@@ -337,6 +337,11 @@ impl ImplMonitor {
         Ok(((height as f32) / scale_factor) as u32)
     }
 
+    pub(crate) fn capture_dimensions(&self) -> XCapResult<(u32, u32)> {
+        let monitor = get_monitor_info_buf(self.output)?;
+        Ok((u32::from(monitor.width()), u32::from(monitor.height())))
+    }
+
     pub fn rotation(&self) -> XCapResult<f32> {
         let mode_infos = get_mode_infos()?;
         let (rotation, _) = get_rotation_frequency(mode_infos, &self.output).unwrap_or((0.0, 0.0));

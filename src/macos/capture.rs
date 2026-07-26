@@ -19,8 +19,8 @@ use objc2_core_video::{
 };
 use objc2_foundation::{NSError, NSObject, NSObjectProtocol, NSProcessInfo};
 use objc2_screen_capture_kit::{
-    SCContentFilter, SCShareableContent, SCStream, SCStreamConfiguration, SCStreamOutput,
-    SCStreamOutputType,
+    SCContentFilter, SCDisplay, SCShareableContent, SCStream, SCStreamConfiguration,
+    SCStreamOutput, SCStreamOutputType,
 };
 use scopeguard::defer;
 
@@ -30,7 +30,7 @@ use super::bgra_to_rgba;
 use super::capture_compatible;
 
 // 流缓存结构：复用 SCStream 以避免重复创建和启动
-// 注意：display_id, width, height 虽然现在由 HashMap 的键管理，但保留它们有助于调试
+// display_id/width/height are retained for diagnostics and generation checks.
 #[allow(dead_code)]
 struct StreamCache {
     stream: Retained<SCStream>,
@@ -71,10 +71,10 @@ thread_local! {
     static SHAREABLE_CONTENT_CACHE: std::cell::RefCell<Option<(Retained<SCShareableContent>, bool)>> = std::cell::RefCell::new(None);
 }
 
-// 线程本地流缓存，按 display_id 和尺寸缓存多个显示器的流
-// 使用 HashMap 支持在同一线程中缓存多个显示器的流
+// 线程本地流缓存：每个 display_id 最多保留一个流。尺寸变化会先
+// stop/drop 旧流，再创建新 generation。
 thread_local! {
-    static STREAM_CACHE: std::cell::RefCell<HashMap<(CGDirectDisplayID, usize, usize), StreamCache>> = std::cell::RefCell::new(HashMap::new());
+    static STREAM_CACHE: std::cell::RefCell<HashMap<CGDirectDisplayID, StreamCache>> = std::cell::RefCell::new(HashMap::new());
 }
 
 // 缓存 macOS 版本检查结果，避免重复调用
@@ -82,9 +82,15 @@ thread_local! {
     static SCKIT_AVAILABLE_CACHE: std::cell::Cell<Option<bool>> = std::cell::Cell::new(None);
 }
 
-fn invalidate_stream_cache(cache_key: (CGDirectDisplayID, usize, usize)) {
+fn invalidate_stream_cache(display_id: CGDirectDisplayID) {
     STREAM_CACHE.with(|cache| {
-        cache.borrow_mut().remove(&cache_key);
+        cache.borrow_mut().remove(&display_id);
+    });
+}
+
+fn invalidate_shareable_content_cache() {
+    SHAREABLE_CONTENT_CACHE.with(|cache| {
+        *cache.borrow_mut() = None;
     });
 }
 
@@ -108,7 +114,14 @@ pub fn capture_with_scale(
     // 深度优化：快速失败，如果 ScreenCaptureKit 超时或失败，立即回退
     if is_screencapturekit_available() {
         // 尝试使用 ScreenCaptureKit，但设置较短的超时以便快速回退
-        match capture_with_screencapturekit(cg_rect, list_option, window_id, display_id, scale) {
+        match capture_with_screencapturekit(
+            cg_rect,
+            list_option,
+            window_id,
+            display_id,
+            scale,
+            None,
+        ) {
             Ok(image) => return Ok(image),
             Err(_) => {
                 // ScreenCaptureKit 不可用或失败，快速回退到 CGWindowListCreateImage
@@ -118,6 +131,34 @@ pub fn capture_with_scale(
     }
     // 回退到传统的 CGWindowListCreateImage 方法（通常更快但已废弃）
     // CGWindowListCreateImage 始终返回物理像素，无需 scale 参数
+    capture_compatible::capture_with_cgwindowlist(cg_rect, list_option, window_id)
+}
+
+pub fn capture_with_dimensions(
+    cg_rect: CGRect,
+    list_option: CGWindowListOption,
+    window_id: CGWindowID,
+    display_id: Option<CGDirectDisplayID>,
+    width: u32,
+    height: u32,
+) -> XCapResult<RgbaImage> {
+    if width == 0 || height == 0 {
+        return Err(XCapError::new(
+            "ScreenCaptureKit output dimensions must be non-zero",
+        ));
+    }
+    if is_screencapturekit_available() {
+        if let Ok(image) = capture_with_screencapturekit(
+            cg_rect,
+            list_option,
+            window_id,
+            display_id,
+            1.0,
+            Some((width as usize, height as usize)),
+        ) {
+            return Ok(image);
+        }
+    }
     capture_compatible::capture_with_cgwindowlist(cg_rect, list_option, window_id)
 }
 
@@ -361,6 +402,45 @@ pub(super) fn fetch_shareable_content(
     Ok(content)
 }
 
+fn display_from_shareable_content(
+    shareable_content: &SCShareableContent,
+    display_id: CGDirectDisplayID,
+) -> Option<Retained<SCDisplay>> {
+    unsafe {
+        let displays = shareable_content.displays();
+        (0..displays.count())
+            .map(|index| displays.objectAtIndex(index))
+            .find(|display| display.displayID() == display_id)
+    }
+}
+
+/// Resolves one display from ScreenCaptureKit topology. Callers creating a
+/// long-lived recorder can force a fresh snapshot; cached callers still
+/// invalidate and refetch once when the requested display is missing.
+pub(super) fn fetch_shareable_content_for_display(
+    excluding_desktop_windows: bool,
+    display_id: CGDirectDisplayID,
+    force_refresh: bool,
+) -> XCapResult<(Retained<SCShareableContent>, Retained<SCDisplay>)> {
+    if force_refresh {
+        invalidate_stream_cache(display_id);
+        invalidate_shareable_content_cache();
+    }
+    let shareable_content = fetch_shareable_content(excluding_desktop_windows)?;
+    if let Some(display) = display_from_shareable_content(&shareable_content, display_id) {
+        return Ok((shareable_content, display));
+    }
+
+    invalidate_stream_cache(display_id);
+    invalidate_shareable_content_cache();
+    let refreshed_content = fetch_shareable_content(excluding_desktop_windows)?;
+    let display =
+        display_from_shareable_content(&refreshed_content, display_id).ok_or_else(|| {
+            XCapError::new("ScreenCaptureKit target display not found after topology refresh")
+        })?;
+    Ok((refreshed_content, display))
+}
+
 /// 使用 ScreenCaptureKit 进行屏幕捕获
 fn capture_with_screencapturekit(
     cg_rect: CGRect,
@@ -368,46 +448,23 @@ fn capture_with_screencapturekit(
     _window_id: CGWindowID,
     display_id: Option<CGDirectDisplayID>,
     scale: f32,
+    output_dimensions: Option<(usize, usize)>,
 ) -> XCapResult<RgbaImage> {
     unsafe {
         let total_start = Instant::now();
 
-        // 1. 获取可共享内容
-        let t1 = Instant::now();
-        let shareable_content = fetch_shareable_content(false)?;
-        debug!("[性能] 1. 获取可共享内容: {:?}", t1.elapsed());
-
-        // 2. 获取显示器列表
-        let t2 = Instant::now();
-        let displays = shareable_content.displays();
-        if displays.count() == 0 {
-            return Err(XCapError::new("No displays found"));
-        }
-        debug!("[性能] 2. 获取显示器列表: {:?}", t2.elapsed());
-
-        // 3. 找到对应的显示器（优化：如果提供了 display_id，直接使用；否则通过 rect 查找）
-        let t3 = Instant::now();
+        // Resolve the target id before reading cached ScreenCaptureKit
+        // topology so a target miss can force one fresh topology query.
         let target_display_id = display_id.unwrap_or_else(|| {
             find_display_for_rect(cg_rect).unwrap_or_else(|_| {
                 use objc2_core_graphics::CGMainDisplayID;
                 CGMainDisplayID()
             })
         });
-        debug!("[性能] 3. 找到对应的显示器: {:?}", t3.elapsed());
-
-        // 优化：直接查找目标显示器，避免不必要的遍历
-        let t4 = Instant::now();
-        let display_count = displays.count();
-        let mut display: Option<Retained<objc2_screen_capture_kit::SCDisplay>> = None;
-        for i in 0..display_count {
-            let d = displays.objectAtIndex(i);
-            if d.displayID() == target_display_id {
-                display = Some(d);
-                break;
-            }
-        }
-        let display = display.ok_or_else(|| XCapError::new("Target display not found"))?;
-        debug!("[性能] 4. 查找目标显示器: {:?}", t4.elapsed());
+        let t1 = Instant::now();
+        let (_shareable_content, display) =
+            fetch_shareable_content_for_display(false, target_display_id, false)?;
+        debug!("[性能] 1. 获取共享内容并解析显示器: {:?}", t1.elapsed());
 
         // 4. 创建内容过滤器
         let t5 = Instant::now();
@@ -427,7 +484,9 @@ fn capture_with_screencapturekit(
         // 如果 cg_rect 尺寸为 0，说明需要获取完整显示器尺寸
         // scale 参数用于控制捕获分辨率：1.0=逻辑分辨率，2.0=物理分辨率(Retina)
         let t6 = Instant::now();
-        let (width, height) = if cg_rect.size.width > 0.0 && cg_rect.size.height > 0.0 {
+        let (width, height) = if let Some(output_dimensions) = output_dimensions {
+            output_dimensions
+        } else if cg_rect.size.width > 0.0 && cg_rect.size.height > 0.0 {
             (
                 (cg_rect.size.width * scale as f64).round() as usize,
                 (cg_rect.size.height * scale as f64).round() as usize,
@@ -452,17 +511,18 @@ fn capture_with_screencapturekit(
 
         // 7-9. 复用流或创建新流
         let t8 = Instant::now();
-        let cache_key = (target_display_id, width, height);
         let (stream, need_start): (Retained<SCStream>, bool) =
             STREAM_CACHE.with(|cache| -> XCapResult<(Retained<SCStream>, bool)> {
                 let mut cache_ref = cache.borrow_mut();
 
-                // 检查缓存：如果 display_id 和尺寸匹配，且流已启动，直接复用
-                if let Some(cached) = cache_ref.get(&cache_key) {
-                    if cached.is_started {
+                // 每个显示器只保留一个单帧流。尺寸变化先移除旧代，
+                // Drop 会显式 stopCapture，避免分辨率反复切换时积累流。
+                if let Some(cached) = cache_ref.get(&target_display_id) {
+                    if cached.width == width && cached.height == height && cached.is_started {
                         return Ok((cached.stream.clone(), false));
                     }
                 }
+                cache_ref.remove(&target_display_id);
 
                 // 缓存未命中或需要重新创建，创建新流
                 let stream_config = SCStreamConfiguration::new();
@@ -472,7 +532,7 @@ fn capture_with_screencapturekit(
                 stream_config.setQueueDepth(1);
                 // scale > 1.0 时输出尺寸可能大于物理像素，默认 scalesToFit=false
                 // 只会缩小不会放大，导致内容只占据部分画面
-                unsafe { stream_config.setScalesToFit(true) };
+                stream_config.setScalesToFit(true);
 
                 let stream = SCStream::initWithFilter_configuration_delegate(
                     SCStream::alloc(),
@@ -481,9 +541,9 @@ fn capture_with_screencapturekit(
                     None,
                 );
 
-                // 更新缓存：使用 (display_id, width, height) 作为键，支持多个显示器
+                // Replace the sole cached generation for this display.
                 cache_ref.insert(
-                    cache_key,
+                    target_display_id,
                     StreamCache {
                         stream: stream.clone(),
                         display_id: target_display_id,
@@ -501,13 +561,14 @@ fn capture_with_screencapturekit(
         let t9 = Instant::now();
         let output_queue = DispatchQueue::new("SCStreamOutputQueue", DispatchQueueAttr::SERIAL);
         let output_queue_ref: &DispatchQueue = output_queue.as_ref();
-        stream
-            .addStreamOutput_type_sampleHandlerQueue_error(
-                output_delegate_protocol.as_ref(),
-                SCStreamOutputType::Screen,
-                Some(output_queue_ref),
-            )
-            .map_err(|err| XCapError::new(err.localizedDescription().to_string()))?;
+        if let Err(err) = stream.addStreamOutput_type_sampleHandlerQueue_error(
+            output_delegate_protocol.as_ref(),
+            SCStreamOutputType::Screen,
+            Some(output_queue_ref),
+        ) {
+            invalidate_stream_cache(target_display_id);
+            return Err(XCapError::new(err.localizedDescription().to_string()));
+        }
         // The output delegate and dispatch queue must remain alive until the
         // output is detached. Register cleanup immediately after a successful
         // add so every subsequent start/frame/conversion error path removes it.
@@ -520,7 +581,7 @@ fn capture_with_screencapturekit(
                     "ScreenCaptureKit output removal failed; invalidating cached stream: {}",
                     err.localizedDescription()
                 );
-                invalidate_stream_cache(cache_key);
+                invalidate_stream_cache(target_display_id);
             }
         }
         debug!("[性能] 9. 添加输出: {:?}", t9.elapsed());
@@ -538,30 +599,31 @@ fn capture_with_screencapturekit(
                 let _ = start_tx.send(result);
             });
 
+            // Once start has been requested every error/timeout path must
+            // explicitly stop the stream. Mark it before invoking SCK so a
+            // delayed completion cannot leave an uncached running stream.
+            STREAM_CACHE.with(|cache| {
+                if let Some(cached) = cache.borrow_mut().get_mut(&target_display_id) {
+                    cached.is_started = true;
+                }
+            });
             stream.startCaptureWithCompletionHandler(Some(&start_block));
 
             // 同步等待：使用阻塞接收，设置超时（优化：缩短到 200ms）
             match start_rx.recv_timeout(std::time::Duration::from_millis(200)) {
-                Ok(Ok(())) => {
-                    // 更新缓存状态为已启动
-                    STREAM_CACHE.with(|cache| {
-                        if let Some(cached) = cache.borrow_mut().get_mut(&cache_key) {
-                            cached.is_started = true;
-                        }
-                    });
-                }
+                Ok(Ok(())) => {}
                 Ok(Err(err)) => {
-                    invalidate_stream_cache(cache_key);
+                    invalidate_stream_cache(target_display_id);
                     return Err(XCapError::new(err.localizedDescription().to_string()));
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {
-                    invalidate_stream_cache(cache_key);
+                    invalidate_stream_cache(target_display_id);
                     return Err(XCapError::new(
                         "Timed out while starting ScreenCaptureKit stream",
                     ));
                 }
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    invalidate_stream_cache(cache_key);
+                    invalidate_stream_cache(target_display_id);
                     return Err(XCapError::new("Channel disconnected"));
                 }
             }
@@ -573,11 +635,11 @@ fn capture_with_screencapturekit(
         let frame_result = match frame_rx.recv_timeout(std::time::Duration::from_millis(200)) {
             Ok(result) => result,
             Err(mpsc::RecvTimeoutError::Timeout) => {
-                invalidate_stream_cache(cache_key);
+                invalidate_stream_cache(target_display_id);
                 return Err(XCapError::new("Timeout waiting for ScreenCaptureKit frame"));
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
-                invalidate_stream_cache(cache_key);
+                invalidate_stream_cache(target_display_id);
                 return Err(XCapError::new("Channel disconnected"));
             }
         };
@@ -585,7 +647,7 @@ fn capture_with_screencapturekit(
         let pixel_buffer = match frame_result {
             Ok(buffer) => buffer,
             Err(err) => {
-                invalidate_stream_cache(cache_key);
+                invalidate_stream_cache(target_display_id);
                 return Err(XCapError::new(err.localizedDescription().to_string()));
             }
         };

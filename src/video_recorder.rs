@@ -1,5 +1,5 @@
 use std::{
-    fmt,
+    fmt, mem,
     ops::{Deref, DerefMut},
     sync::{
         Arc, Condvar, Mutex,
@@ -35,6 +35,69 @@ pub enum CaptureBackendKind {
     LinuxPipeWire,
     LinuxXorg,
     LinuxXShm,
+}
+
+/// Requested output dimensions for monitor screenshots and persistent video
+/// capture.
+///
+/// `FitWithin` treats `max_long_edge` and `max_short_edge` as orientation
+/// independent bounds. The source aspect ratio is preserved, frames are never
+/// enlarged, and dimensions greater than one are rounded down to even values
+/// for compatibility with common 4:2:0 video encoders.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum VideoRecorderOutputSize {
+    Native,
+    FitWithin {
+        max_long_edge: u32,
+        max_short_edge: u32,
+    },
+}
+
+impl VideoRecorderOutputSize {
+    pub fn output_dimensions(self, width: u32, height: u32) -> (u32, u32) {
+        let width = width.max(1);
+        let height = height.max(1);
+        let (output_width, output_height) = match self {
+            Self::Native => (width, height),
+            Self::FitWithin {
+                max_long_edge,
+                max_short_edge,
+            } => {
+                let max_long_edge = max_long_edge.max(1);
+                let max_short_edge = max_short_edge.max(1);
+                let (max_width, max_height) = if width >= height {
+                    (max_long_edge, max_short_edge)
+                } else {
+                    (max_short_edge, max_long_edge)
+                };
+
+                if width <= max_width && height <= max_height {
+                    (width, height)
+                } else {
+                    let width_limited = u64::from(max_width) * u64::from(height)
+                        <= u64::from(max_height) * u64::from(width);
+                    let (numerator, denominator) = if width_limited {
+                        (max_width, width)
+                    } else {
+                        (max_height, height)
+                    };
+                    (
+                        (u64::from(width) * u64::from(numerator) / u64::from(denominator)) as u32,
+                        (u64::from(height) * u64::from(numerator) / u64::from(denominator)) as u32,
+                    )
+                }
+            }
+        };
+
+        (
+            even_dimension_without_upscale(output_width),
+            even_dimension_without_upscale(output_height),
+        )
+    }
+}
+
+fn even_dimension_without_upscale(value: u32) -> u32 {
+    if value <= 1 { 1 } else { value & !1 }
 }
 
 #[derive(Debug, Clone)]
@@ -183,6 +246,9 @@ impl FrameBufferPool {
 #[derive(Clone, Copy, Debug)]
 pub struct VideoRecorderConfig {
     pub fps: f64,
+    /// Explicit output sizing policy. When present, this takes precedence
+    /// over the legacy `scale_factor` and `max_pixels` fields.
+    pub output_size: Option<VideoRecorderOutputSize>,
     /// Preferred platform capture scale. `None` keeps the platform default.
     pub scale_factor: Option<f32>,
     /// Preferred upper bound for captured pixels.
@@ -202,6 +268,7 @@ impl Default for VideoRecorderConfig {
     fn default() -> Self {
         Self {
             fps: 30.0,
+            output_size: None,
             scale_factor: None,
             max_pixels: None,
             prefer_windows_wgc: false,
@@ -218,6 +285,10 @@ impl VideoRecorderConfig {
         height: u32,
         apply_scale: bool,
     ) -> (u32, u32) {
+        if let Some(output_size) = self.output_size {
+            return output_size.output_dimensions(width, height);
+        }
+
         let scale = if apply_scale {
             self.scale_factor
                 .filter(|scale| scale.is_finite() && *scale > 0.0)
@@ -316,6 +387,69 @@ impl Frame {
             backend_kind,
             native_surface: Some(surface),
         }
+    }
+
+    /// Resizes this packed RGBA/BGRA frame while preserving its pixel format.
+    ///
+    /// Pooled capture frames acquire the destination from the same bounded
+    /// pool before replacing the source. This keeps the peak at the source
+    /// plus one destination buffer. If the second buffer is unavailable or
+    /// the source geometry is invalid, the frame is left unchanged.
+    pub fn resize_to_dimensions(&mut self, dimensions: (u32, u32)) -> XCapResult<bool> {
+        let (output_width, output_height) = dimensions;
+        if (self.width, self.height) == dimensions {
+            return Ok(false);
+        }
+        if output_width == 0 || output_height == 0 {
+            return Err(XCapError::new(
+                "cannot resize a video frame to empty dimensions",
+            ));
+        }
+        #[cfg(target_os = "macos")]
+        if self.native_surface.is_some() {
+            return Err(XCapError::new(
+                "cannot resize an IOSurface-only video frame without a packed pixel buffer",
+            ));
+        }
+
+        let output_len = usize::try_from(output_width)
+            .ok()
+            .and_then(|width| {
+                usize::try_from(output_height)
+                    .ok()
+                    .and_then(|height| width.checked_mul(height))
+            })
+            .and_then(|pixels| pixels.checked_mul(4))
+            .ok_or_else(|| XCapError::new("video frame output size overflow"))?;
+        let mut output = match self.raw.pool.clone() {
+            Some(pool) => pool.try_acquire(output_len).ok_or_else(|| {
+                XCapError::new(
+                    "video frame buffer pool is full; retain the source frame for encoder scaling",
+                )
+            })?,
+            None => FrameBuffer::owned(vec![0; output_len]),
+        };
+
+        crate::monitor::resize_packed_pixels_into(
+            self.raw.as_slice(),
+            self.width,
+            self.height,
+            self.stride,
+            output.as_mut_slice(),
+            output_width,
+            output_height,
+        )?;
+
+        let source = mem::replace(&mut self.raw, output);
+        self.width = output_width;
+        self.height = output_height;
+        self.stride = output_width as usize * 4;
+        #[cfg(target_os = "macos")]
+        {
+            self.native_surface = None;
+        }
+        drop(source);
+        Ok(true)
     }
 
     pub fn byte_len(&self) -> usize {
@@ -663,6 +797,116 @@ mod tests {
     }
 
     #[test]
+    fn fit_within_resolves_landscape_retina_dimensions() {
+        assert_eq!(
+            VideoRecorderOutputSize::FitWithin {
+                max_long_edge: 1920,
+                max_short_edge: 1080,
+            }
+            .output_dimensions(3456, 2234),
+            (1670, 1080)
+        );
+        assert_eq!(
+            VideoRecorderOutputSize::FitWithin {
+                max_long_edge: 1280,
+                max_short_edge: 720,
+            }
+            .output_dimensions(3456, 2234),
+            (1112, 720)
+        );
+        assert_eq!(
+            VideoRecorderOutputSize::FitWithin {
+                max_long_edge: 854,
+                max_short_edge: 480,
+            }
+            .output_dimensions(3456, 2234),
+            (742, 480)
+        );
+    }
+
+    #[test]
+    fn fit_within_resolves_portrait_dimensions() {
+        assert_eq!(
+            VideoRecorderOutputSize::FitWithin {
+                max_long_edge: 1920,
+                max_short_edge: 1080,
+            }
+            .output_dimensions(2234, 3456),
+            (1080, 1670)
+        );
+    }
+
+    #[test]
+    fn fit_within_constrains_ultrawide_dimensions() {
+        assert_eq!(
+            VideoRecorderOutputSize::FitWithin {
+                max_long_edge: 1920,
+                max_short_edge: 1080,
+            }
+            .output_dimensions(5120, 1440),
+            (1920, 540)
+        );
+    }
+
+    #[test]
+    fn fit_within_does_not_upscale() {
+        assert_eq!(
+            VideoRecorderOutputSize::FitWithin {
+                max_long_edge: 1920,
+                max_short_edge: 1080,
+            }
+            .output_dimensions(1024, 768),
+            (1024, 768)
+        );
+    }
+
+    #[test]
+    fn explicit_output_dimensions_are_even() {
+        assert_eq!(
+            VideoRecorderOutputSize::Native.output_dimensions(3455, 2233),
+            (3454, 2232)
+        );
+        assert_eq!(
+            VideoRecorderOutputSize::FitWithin {
+                max_long_edge: 1919,
+                max_short_edge: 1079,
+            }
+            .output_dimensions(3455, 2233),
+            (1668, 1078)
+        );
+    }
+
+    #[test]
+    fn explicit_output_size_takes_precedence_over_legacy_fields() {
+        let config = VideoRecorderConfig {
+            output_size: Some(VideoRecorderOutputSize::FitWithin {
+                max_long_edge: 1280,
+                max_short_edge: 720,
+            }),
+            scale_factor: Some(0.25),
+            max_pixels: Some(100),
+            ..VideoRecorderConfig::default()
+        };
+        assert_eq!(config.output_dimensions(3456, 2234, true), (1112, 720));
+    }
+
+    #[test]
+    fn absent_output_size_preserves_legacy_scaling() {
+        assert_eq!(
+            VideoRecorderConfig::default().output_dimensions(3455, 2233, true),
+            (3455, 2233)
+        );
+        let config = VideoRecorderConfig {
+            output_size: None,
+            scale_factor: Some(0.5),
+            max_pixels: Some(1_000_000),
+            ..VideoRecorderConfig::default()
+        };
+        assert_eq!(config.output_dimensions(1920, 1080, true), (960, 540));
+        assert_eq!(config.output_dimensions(1920, 1080, false), (1333, 750));
+    }
+
+    #[test]
     fn two_buffer_pool_drops_third_and_reuses_after_drop() {
         let pool = FrameBufferPool::new(2);
         let first = pool.try_acquire(16).unwrap();
@@ -672,6 +916,83 @@ mod tests {
         drop(first);
         assert!(pool.try_acquire(16).is_some());
         drop(second);
+    }
+
+    #[test]
+    fn pooled_frame_resize_reuses_only_source_and_destination_buffers() {
+        let pool = FrameBufferPool::new(2);
+        let mut source = pool.try_acquire(3 * 2 * 4).unwrap();
+        source.as_mut_slice().copy_from_slice(&[
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
+        ]);
+        let mut frame = Frame::from_pooled(
+            3,
+            2,
+            12,
+            source,
+            FramePixelFormat::Bgra8,
+            SystemTime::now(),
+            Instant::now(),
+            CaptureBackendKind::Unknown,
+        );
+
+        assert!(frame.resize_to_dimensions((2, 2)).unwrap());
+        assert_eq!((frame.width, frame.height, frame.stride), (2, 2, 8));
+        assert_eq!(
+            frame.raw.as_slice(),
+            &[1, 2, 3, 4, 9, 10, 11, 12, 13, 14, 15, 16, 21, 22, 23, 24]
+        );
+        assert_eq!(pool.allocated.load(Ordering::Acquire), 2);
+        assert_eq!(
+            pool.available
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .len(),
+            1
+        );
+
+        assert!(frame.resize_to_dimensions((1, 1)).unwrap());
+        assert_eq!(pool.allocated.load(Ordering::Acquire), 2);
+    }
+
+    #[test]
+    fn pooled_frame_resize_failure_leaves_source_unchanged() {
+        let pool = FrameBufferPool::new(2);
+        let source = pool.try_acquire(16).unwrap();
+        let _occupied_destination = pool.try_acquire(16).unwrap();
+        let mut frame = Frame::from_pooled(
+            2,
+            2,
+            8,
+            source,
+            FramePixelFormat::Rgba8,
+            SystemTime::now(),
+            Instant::now(),
+            CaptureBackendKind::Unknown,
+        );
+
+        let error = frame.resize_to_dimensions((1, 1)).unwrap_err();
+
+        assert!(error.to_string().contains("buffer pool is full"));
+        assert_eq!((frame.width, frame.height, frame.stride), (2, 2, 8));
+        assert_eq!(frame.raw.len(), 16);
+    }
+
+    #[test]
+    fn invalid_stride_resize_leaves_source_unchanged() {
+        let mut frame = Frame::new(2, 2, (0..16).collect());
+        frame.stride = 4;
+        let original = frame.raw.as_slice().to_vec();
+
+        let error = frame.resize_to_dimensions((1, 1)).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("stride or buffer length is invalid")
+        );
+        assert_eq!((frame.width, frame.height, frame.stride), (2, 2, 4));
+        assert_eq!(frame.raw.as_slice(), original);
     }
 }
 

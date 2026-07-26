@@ -33,10 +33,7 @@ impl XorgVideoRecorder {
         monitor: ImplMonitor,
         config: VideoRecorderConfig,
     ) -> XCapResult<(Self, Receiver<Frame>)> {
-        if let Ok(source_size) = monitor
-            .width()
-            .and_then(|width| monitor.height().map(|height| (width, height)))
-        {
+        if let Ok(source_size) = monitor.capture_dimensions() {
             let requested_size = config.output_dimensions(source_size.0, source_size.1, true);
             if requested_size != source_size {
                 log::warn!(

@@ -34,7 +34,9 @@ use windows::{
     core::{AgileReference, IInspectable, Interface, factory},
 };
 
-use super::d3d11_readback::{D3d11ReadbackState, texture_to_frame as readback_texture_to_frame};
+use super::d3d11_readback::{
+    D3d11ReadbackState, FrameRotation, texture_to_frame as readback_texture_to_frame,
+};
 
 use crate::{
     XCapError, XCapResult,
@@ -211,6 +213,7 @@ impl WgcVideoRecorder {
                             Some((captured_at, captured_monotonic_at)),
                             config,
                             CaptureBackendKind::WindowsGraphicsCapture,
+                            FrameRotation::Identity,
                         )
                     });
 

@@ -37,7 +37,9 @@ use crate::{
     },
 };
 
-use super::d3d11_readback::{D3d11ReadbackState, texture_to_frame as readback_texture_to_frame};
+use super::d3d11_readback::{
+    D3d11ReadbackState, FrameRotation, texture_to_frame as readback_texture_to_frame,
+};
 #[cfg(feature = "windows-wgc")]
 use super::wgc_video_recorder::WgcVideoRecorder;
 
@@ -56,6 +58,7 @@ pub fn texture_to_frame(
         None,
         VideoRecorderConfig::default(),
         CaptureBackendKind::WindowsDxgi,
+        FrameRotation::Identity,
     )?
     .ok_or_else(|| XCapError::new("frame buffer unavailable"))
 }
@@ -68,6 +71,7 @@ fn texture_to_frame_inner(
     buffer_pool: Option<&Arc<FrameBufferPool>>,
     captured: Option<(SystemTime, Instant)>,
     config: VideoRecorderConfig,
+    rotation: FrameRotation,
 ) -> XCapResult<Option<Frame>> {
     readback_texture_to_frame(
         d3d_device,
@@ -78,6 +82,7 @@ fn texture_to_frame_inner(
         captured,
         config,
         CaptureBackendKind::WindowsDxgi,
+        rotation,
     )
 }
 
@@ -92,6 +97,7 @@ pub(crate) struct DxgiVideoRecorder {
     latest_dropped: Arc<AtomicUsize>,
     readback_state: Arc<Mutex<D3d11ReadbackState>>,
     config: VideoRecorderConfig,
+    rotation: FrameRotation,
 }
 
 impl DxgiVideoRecorder {
@@ -129,6 +135,7 @@ impl DxgiVideoRecorder {
                 let duplication = output1.DuplicateOutput(&dxgi_device)?;
 
                 if output_desc.Monitor == h_monitor {
+                    let rotation = FrameRotation::from_dxgi(duplication.GetDesc().Rotation)?;
                     let (tx, sx) = latest_frame_channel();
                     let latest_dropped = tx.dropped_counter();
                     let buffer_pool = FrameBufferPool::new(2);
@@ -143,6 +150,7 @@ impl DxgiVideoRecorder {
                         latest_dropped,
                         readback_state: Arc::new(Mutex::new(D3d11ReadbackState::default())),
                         config,
+                        rotation,
                     };
                     s.on_frame(tx)?;
                     return Ok((s, sx));
@@ -161,6 +169,7 @@ impl DxgiVideoRecorder {
         let buffer_pool = self.buffer_pool.clone();
         let readback_state = self.readback_state.clone();
         let config = self.config;
+        let rotation = self.rotation;
 
         let worker = thread::spawn(move || {
             set_current_thread_utility_priority();
@@ -213,6 +222,7 @@ impl DxgiVideoRecorder {
                                         Some(&buffer_pool),
                                         Some((captured_at, captured_monotonic_at)),
                                         config,
+                                        rotation,
                                     )? {
                                         let _ = tx.send_latest(frame);
                                     }

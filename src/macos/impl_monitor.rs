@@ -1,4 +1,4 @@
-use std::sync::mpsc::Receiver;
+use std::{mem, sync::mpsc::Receiver};
 
 use image::RgbaImage;
 use objc2::MainThreadMarker;
@@ -17,13 +17,34 @@ use crate::{
 };
 
 use super::{
-    capture::capture, capture::capture_with_scale, display_info,
+    capture::{capture, capture_with_dimensions, capture_with_scale},
+    display_info,
     impl_video_recorder::ImplVideoRecorder,
 };
 
 #[derive(Debug, Clone)]
 pub(crate) struct ImplMonitor {
     pub cg_direct_display_id: CGDirectDisplayID,
+}
+
+pub(super) fn native_pixel_dimensions_for_display(
+    display_id: CGDirectDisplayID,
+) -> XCapResult<(u32, u32)> {
+    let bounds = CGDisplayBounds(display_id);
+    let logical_width = bounds.size.width.max(1.0).round() as u32;
+    let logical_height = bounds.size.height.max(1.0).round() as u32;
+    let display_mode = CGDisplayCopyDisplayMode(display_id);
+    let mut pixel_width = CGDisplayMode::pixel_width(display_mode.as_deref()) as u32;
+    let mut pixel_height = CGDisplayMode::pixel_height(display_mode.as_deref()) as u32;
+    if pixel_width == 0 || pixel_height == 0 {
+        return Err(XCapError::new(format!(
+            "CGDisplayMode returned invalid native pixel dimensions for display {display_id}"
+        )));
+    }
+    if (logical_width >= logical_height) != (pixel_width >= pixel_height) {
+        mem::swap(&mut pixel_width, &mut pixel_height);
+    }
+    Ok((pixel_width, pixel_height))
 }
 
 fn get_display_friendly_name(display_id: CGDirectDisplayID) -> XCapResult<String> {
@@ -210,6 +231,10 @@ impl ImplMonitor {
         Ok(pixel_width as f32 / width as f32)
     }
 
+    pub(crate) fn native_pixel_dimensions(&self) -> XCapResult<(u32, u32)> {
+        native_pixel_dimensions_for_display(self.cg_direct_display_id)
+    }
+
     pub fn frequency(&self) -> XCapResult<f32> {
         let frequency = unsafe {
             let display_mode = CGDisplayCopyDisplayMode(self.cg_direct_display_id);
@@ -252,6 +277,22 @@ impl ImplMonitor {
             0,
             Some(self.cg_direct_display_id),
             scale,
+        )
+    }
+
+    pub(crate) fn capture_image_with_dimensions(
+        &self,
+        width: u32,
+        height: u32,
+    ) -> XCapResult<RgbaImage> {
+        let cg_rect = unsafe { CGDisplayBounds(self.cg_direct_display_id) };
+        capture_with_dimensions(
+            cg_rect,
+            CGWindowListOption::OptionAll,
+            0,
+            Some(self.cg_direct_display_id),
+            width,
+            height,
         )
     }
 

@@ -317,7 +317,7 @@ impl WaylandVideoRecorder {
             .and_then(|(width, height)| {
                 (width > 0 && height > 0).then_some((width as u32, height as u32))
             })
-            .or_else(|| monitor.width().ok().zip(monitor.height().ok()))
+            .or_else(|| monitor.capture_dimensions().ok())
             .ok_or_else(|| XCapError::new("PipeWire source size is unavailable"))?;
         let requested_size = config.output_dimensions(source_size.0, source_size.1, true);
         if requested_size != source_size {
@@ -460,12 +460,13 @@ impl WaylandVideoRecorder {
                             return;
                         }
                         let negotiated = user_data.format.size();
-                        if (negotiated.width, negotiated.height) != requested_size {
-                            param_negotiated_width
-                                .store(negotiated.width as usize, Ordering::Relaxed);
-                            param_negotiated_height
-                                .store(negotiated.height as usize, Ordering::Relaxed);
-                        }
+                        // Store every successful negotiation. PipeWire may
+                        // emit multiple format callbacks while converging; an
+                        // early mismatch must not produce a false warning if
+                        // the final negotiated format matches the request.
+                        param_negotiated_width.store(negotiated.width as usize, Ordering::Relaxed);
+                        param_negotiated_height
+                            .store(negotiated.height as usize, Ordering::Relaxed);
                     })
                     .process(move |stream, user_data| {
                         let state = process_running.load(Ordering::Relaxed);
@@ -661,7 +662,10 @@ impl WaylandVideoRecorder {
                 }
                 let negotiated_width = negotiated_width.load(Ordering::Relaxed);
                 let negotiated_height = negotiated_height.load(Ordering::Relaxed);
-                if negotiated_width > 0 && negotiated_height > 0 {
+                if negotiated_width > 0
+                    && negotiated_height > 0
+                    && (negotiated_width as u32, negotiated_height as u32) != requested_size
+                {
                     log::warn!(
                         "PipeWire compositor did not honor requested {}x{} capture size; negotiated {}x{}",
                         requested_size.0,

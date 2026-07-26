@@ -36,8 +36,10 @@ use crate::{
     },
 };
 
-use super::capture::fetch_shareable_content;
 use super::native_frame::NativeFramePool;
+use super::{
+    capture::fetch_shareable_content_for_display, impl_monitor::native_pixel_dimensions_for_display,
+};
 
 #[derive(Clone, Copy, Debug)]
 enum PersistentStreamTerminal {
@@ -439,12 +441,12 @@ impl ImplVideoRecorder {
         config: VideoRecorderConfig,
     ) -> XCapResult<(Self, Receiver<Frame>)> {
         unsafe {
-            let shareable_content = fetch_shareable_content(false)?;
-            let displays = shareable_content.displays();
-            let display = (0..displays.count())
-                .map(|index| displays.objectAtIndex(index))
-                .find(|display| display.displayID() == display_id)
-                .ok_or_else(|| XCapError::new("ScreenCaptureKit target display not found"))?;
+            // Recorder construction is infrequent and follows topology/config
+            // changes. Force a fresh ScreenCaptureKit snapshot here so a
+            // same-ID resolution or rotation change cannot reuse stale
+            // SCDisplay metadata for a long-lived session.
+            let (_shareable_content, display) =
+                fetch_shareable_content_for_display(false, display_id, true)?;
 
             let excluded_windows = NSArray::new();
             let content_filter = SCContentFilter::initWithDisplay_excludingWindows(
@@ -453,8 +455,20 @@ impl ImplVideoRecorder {
                 excluded_windows.as_ref(),
             );
             let bounds = CGDisplayBounds(display_id);
-            let source_width = bounds.size.width.max(1.0).round() as u32;
-            let source_height = bounds.size.height.max(1.0).round() as u32;
+            let legacy_source_width = bounds.size.width.max(1.0).round() as u32;
+            let legacy_source_height = bounds.size.height.max(1.0).round() as u32;
+            let (source_width, source_height) = if config.output_size.is_some() {
+                // Explicit output sizing is based on physical platform pixels.
+                // An invalid/missing mode is a topology transition, not a
+                // logical-size substitute: fail readiness so the caller can
+                // rebuild or fall back without silently recording the wrong
+                // geometry.
+                native_pixel_dimensions_for_display(display_id)?
+            } else {
+                // Keep the historical logical-pixel source dimensions for
+                // callers that only use scale_factor/max_pixels.
+                (legacy_source_width, legacy_source_height)
+            };
             let (mut width, mut height) =
                 config.output_dimensions(source_width, source_height, true);
             if config.preserve_native_surface {

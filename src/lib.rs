@@ -24,7 +24,7 @@ mod platform;
 pub use image;
 
 pub use error::{XCapError, XCapResult};
-pub use monitor::Monitor;
+pub use monitor::{Monitor, resize_rgba_image_to_dimensions};
 #[cfg(target_os = "linux")]
 pub use monitor_topology::MonitorTopologyWatcher;
 pub use window::Window;
@@ -35,6 +35,7 @@ pub use video_recorder::FrameBuffer;
 pub use video_recorder::FramePixelFormat;
 pub use video_recorder::VideoRecorder;
 pub use video_recorder::VideoRecorderConfig;
+pub use video_recorder::VideoRecorderOutputSize;
 
 #[cfg(target_os = "macos")]
 pub use platform::native_frame::NativeFrameSurface;
