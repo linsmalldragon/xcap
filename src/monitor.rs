@@ -487,7 +487,12 @@ mod tests {
     #[test]
     fn test_capture_region_out_of_bounds() {
         let monitors = Monitor::all().unwrap();
-        let monitor = &monitors[0]; // Get first monitor
+        let Some(monitor) = monitors.first() else {
+            eprintln!(
+                "skipping capture-region integration assertion: no monitor is visible to the test process"
+            );
+            return;
+        };
 
         // Try to capture a region that extends beyond monitor bounds
         let x = monitor.width().unwrap() / 2;
